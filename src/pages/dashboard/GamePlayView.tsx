@@ -88,6 +88,10 @@ const GamePlayView = () => {
     const leaveRoomRef = useRef<(() => Promise<void>) | null>(null);
     const processedQuestionRef = useRef<number>(-1);
     const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const questionsLoadedRef = useRef(false);
+
+
+    const transitionStep2Ref = useRef<ReturnType<typeof setTimeout> | null>(null);
     const processedRoundRef = useRef<number>(0);
     const bufferedOpponentAnswers = useRef<Map<number, { isCorrect: boolean; points: number; currentScore?: number }>>(new Map());
     const currIndexRef = useRef<number>(0);
@@ -100,8 +104,14 @@ const GamePlayView = () => {
     const [opponentAnswered, setOpponentAnswered] = useState<{ isCorrect: boolean, points: number } | null>(null);
 
     // --- TOURNAMENT STATE ---
-    const [isTournament, setIsTournament] = useState(false);
-    const [showTournamentIntro, setShowTournamentIntro] = useState(false);
+    const [isTournament, setIsTournament] = useState(() => {
+        const s = location.state as { isTournament?: boolean } | null;
+        return !!s?.isTournament;
+    });
+    const [showTournamentIntro, setShowTournamentIntro] = useState(() => {
+        const s = location.state as { isTournament?: boolean } | null;
+        return !!s?.isTournament;
+    });
     const [tournamentCountdown, setTournamentCountdown] = useState(3);
     // const [clanScores, setClanScores] = useState({ myClan: 0, opponentClan: 0 }); // Removed unused
     
@@ -137,6 +147,8 @@ const GamePlayView = () => {
 
 
     useEffect(() => {
+        let ignore = false;
+
         // Redirect if state is lost (e.g., page reload)
         const locState = location.state as any;
         if (!roomId && !isBot && !locState?.isTournament) {
@@ -149,91 +161,85 @@ const GamePlayView = () => {
                 // 1. Get User Session
                 const { data: { user } } = await supabase.auth.getUser();
                 if (!user) {
-                    setIsLoadingQuestions(false);
+                    if (!ignore) setIsLoadingQuestions(false);
                     return;
                 }
-                setUserId(user.id);
+                if (!ignore) setUserId(user.id);
 
                 // 2. BOT MODE / TOURNAMENT MODE
                 const locState = (location as any).state;
                 if (locState?.isTournament) {
-                    setIsTournament(true);
-                    setShowTournamentIntro(true);
+                    if (!ignore) {
+                        setIsTournament(true);
+                        setShowTournamentIntro(true);
+                    }
                     const tData = locState.tournamentMatchData;
                     
-                    // Store clan data for icons
-                    setMyClanData({
-                        name: tData.clan1?.name || "MY CLAN",
-                        icon: tData.clan1?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan1"
-                    });
-                    setOppClanData({
-                        name: tData.clan2?.name || "OPP CLAN",
-                        icon: tData.clan2?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan2"
-                    });
-                    
-                    // Setup Mock Teammates & Opponents based on passed data
-                    // We need to construct 4 teammates + Me, and 5 opponents.
-                    
-                    // My Clan Members (Me + 4 others)
-                    // We can use the member lists passed in tData.
-                    // Assuming members1 is MY clan if I navigated.
-                    // Let's assume members1 is ALWAYS "Left" (My Clan) for simplicity in this view context
-                    // and members2 is "Right" (Opponent Clan).
-                    
-                    const myM = tData.members1 || [];
-                    const opM = tData.members2 || [];
-                    
-                    // Find ME in members1. If not there, maybe I'm in members2? 
-                    // For now, let's just take the first 4 OTHER members as teammates.
-                    const otherTeammates = myM.filter((m: any) => m.id !== user.id).slice(0, 4);
-                    
-                    const myTeamState: ClanMemberResult[] = otherTeammates.map((m: any) => ({
-                        id: m.id,
-                        name: m.name,
-                        avatar: m.avatar,
-                        isCorrect: null,
-                        score: 0
-                    }));
-                    
-                    // Add ME to the list (logic handles me separately usually, but for visualization we might need list)
-                    // Actually, let's keep ME separate in standard logic, but visualized together.
-                    setMyClanMembers(myTeamState);
+                    if (!ignore) {
+                        // Store clan data for icons
+                        setMyClanData({
+                            name: tData.clan1?.name || "MY CLAN",
+                            icon: tData.clan1?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan1"
+                        });
+                        setOppClanData({
+                            name: tData.clan2?.name || "OPP CLAN",
+                            icon: tData.clan2?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan2"
+                        });
+                        
+                        // Setup Mock Teammates & Opponents based on passed data
+                        const myM = tData.members1 || [];
+                        const opM = tData.members2 || [];
+                        
+                        const otherTeammates = myM.filter((m: any) => m.id !== user.id).slice(0, 4);
+                        
+                        const myTeamState: ClanMemberResult[] = otherTeammates.map((m: any) => ({
+                            id: m.id,
+                            name: m.name,
+                            avatar: m.avatar,
+                            isCorrect: null,
+                            score: 0
+                        }));
+                        
+                        setMyClanMembers(myTeamState);
 
-                    const opTeamState: ClanMemberResult[] = opM.map((m: any) => ({
-                         id: m.id,
-                         name: m.name,
-                         avatar: m.avatar,
-                         isCorrect: null,
-                         score: 0
-                    }));
-                    setOpponentClanMembers(opTeamState);
+                        const opTeamState: ClanMemberResult[] = opM.map((m: any) => ({
+                             id: m.id,
+                             name: m.name,
+                             avatar: m.avatar,
+                             isCorrect: null,
+                             score: 0
+                        }));
+                        setOpponentClanMembers(opTeamState);
 
-                    // Set Opponent Display for the 1v1 legacy slot (Optional, maybe show Clan Leader)
-                    setOpponent({
-                        id: 'clan-leader',
-                        display_name: tData.clan2?.name || "Opponent Clan",
-                        avatar_url: tData.clan2?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=opp",
-                        is_ready: true,
-                        is_host: false,
-                        rank: 'Clan War'
-                    });
+                        // Set Opponent Display for the 1v1 legacy slot (Optional, maybe show Clan Leader)
+                        setOpponent({
+                            id: 'clan-leader',
+                            display_name: tData.clan2?.name || "Opponent Clan",
+                            avatar_url: tData.clan2?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=opp",
+                            is_ready: true,
+                            is_host: false,
+                            rank: 'Clan War'
+                        });
+                    }
 
                     // Fetch Profile
                     const profileRes = await supabase.from('profiles').select('*').eq('id', user.id).single();
-                    if (profileRes.data) setProfile(profileRes.data);
+                    if (!ignore && profileRes.data) setProfile(profileRes.data);
 
                     // Fetch Questions or Use Mock
                     // Fetch 30 questions for 3 rounds (10 per round)
                     const qRes = await fetchQuestions(30, 'easy', user.id); 
-                    setQuestions(qRes);
-                    
-                    // Set Room Settings for Tournament
-                    setRoomSettings({
-                         questions_per_round: 10,
-                         format: 'Bo3' // Best of 3 Rounds
-                    });
-                    
-                    setIsLoadingQuestions(false);
+                    if (!ignore) {
+                        setQuestions(qRes);
+                        
+                        // Set Room Settings for Tournament
+                        setRoomSettings({
+                             questions_per_round: 10,
+                             format: 'Bo3' // Best of 3 Rounds
+                        });
+                        
+                        setIsLoadingQuestions(false);
+                    }
                     return;
                 }
 
@@ -249,33 +255,35 @@ const GamePlayView = () => {
                         is_host: false,
                         rank: 'Diamond I'
                     };
-                    setOpponent(BOT_OPPONENT);
+                    if (!ignore) setOpponent(BOT_OPPONENT);
 
                     // Fetch profile
                     const profileRes = await supabase.from('profiles').select('*').eq('id', user.id).single();
-                    if (profileRes.data) setProfile(profileRes.data);
+                    if (!ignore && profileRes.data) setProfile(profileRes.data);
 
-                    setRoomSettings({
-                        format: 'Bo3',
-                        questions_per_round: 5
-                    });
+                    if (!ignore) {
+                        setRoomSettings({
+                            format: 'Bo3',
+                            questions_per_round: 5
+                        });
 
 
-                    // Use hardcoded questions to avoid API rate limit
-                    const hardcodedQuestions: ProcessedQuestion[] = Array.from({ length: 15 }, (_, i) => ({
-                        text: `Câu hỏi số ${i + 1} - Đây là câu hỏi test cho chế độ BOT?`,
-                        options: [
-                            'Đáp án A',
-                            'Đáp án B', 
-                            'Đáp án C',
-                            'Đáp án D'
-                        ],
-                        correctAnswer: Math.floor(Math.random() * 4)
-                    }));
-                    
-                    setQuestions(hardcodedQuestions);
-                    setIsLoadingQuestions(false);
-                    console.log('BOT mode: Loaded 15 hardcoded questions');
+                        // Use hardcoded questions to avoid API rate limit
+                        const hardcodedQuestions: ProcessedQuestion[] = Array.from({ length: 15 }, (_, i) => ({
+                            text: `Câu hỏi số ${i + 1} - Đây là câu hỏi test cho chế độ BOT?`,
+                            options: [
+                                'Đáp án A',
+                                'Đáp án B', 
+                                'Đáp án C',
+                                'Đáp án D'
+                            ],
+                            correctAnswer: Math.floor(Math.random() * 4)
+                        }));
+                        
+                        setQuestions(hardcodedQuestions);
+                        setIsLoadingQuestions(false);
+                        console.log('BOT mode: Loaded 15 hardcoded questions');
+                    }
                     return;
                 }
 
@@ -287,9 +295,9 @@ const GamePlayView = () => {
                         : Promise.resolve({ data: null, error: null })
                 ]);
 
-                if (profileRes.data) setProfile(profileRes.data);
+                if (!ignore && profileRes.data) setProfile(profileRes.data);
 
-                if (roomRes.data) {
+                if (!ignore && roomRes.data) {
                     const roomData = roomRes.data;
                     if (roomData.settings) setRoomSettings(roomData.settings);
 
@@ -306,22 +314,28 @@ const GamePlayView = () => {
                     if (opp) setOpponent(opp);
                     
                     setIsLoadingQuestions(false);
-                } else if (!isRanked) {
+                } else if (!ignore && !isRanked) {
                     // For solo/testing
                     const r1 = await fetchQuestions(10, 'easy', user.id);
                     setQuestions(r1);
                     setIsLoadingQuestions(false);
-                } else {
+                } else if (!ignore) {
                      setIsLoadingQuestions(false);
                 }
             } catch (error: unknown) {
-                console.error("Error initializing game:", error);
-                const message = error instanceof Error ? error.message : "Failed to load questions";
-                setFetchError(message);
-                setIsLoadingQuestions(false);
+                if (!ignore) {
+                    console.error("Error initializing game:", error);
+                    const message = error instanceof Error ? error.message : "Failed to load questions";
+                    setFetchError(message);
+                    setIsLoadingQuestions(false);
+                }
             }
         };
         getData();
+
+        return () => {
+            ignore = true;
+        };
     }, [roomId, isRanked, isBot, navigate]);
 
     const leaveRoom = useCallback(async () => {
@@ -759,7 +773,7 @@ const GamePlayView = () => {
                     pointsRef.current.user += uPoints;
                     setRoundPointsHistory(prev => ({ ...prev, user: prev.user + uPoints }));
                     
-                    // UPDATE OPPONENT SCORE (Delayed Reveal)
+                    // UPDATE OPPONENT SCORE (Delayed Reveal) (Code omitted for brevity, matches existing)
                     const buff = bufferedOpponentAnswers.current.get(currentQuestionIndex);
                     if (buff) {
                          if (buff.currentScore !== undefined) {
@@ -777,7 +791,7 @@ const GamePlayView = () => {
                     setShowTransition(true);
 
                     // Hide transition and move next after 4 seconds
-                    setTimeout(() => {
+                    transitionStep2Ref.current = setTimeout(() => {
                         setShowTransition(false);
 
                         if (isEndOfRound) {
@@ -851,6 +865,7 @@ const GamePlayView = () => {
 
         return () => {
              if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
+             if (transitionStep2Ref.current) clearTimeout(transitionStep2Ref.current);
         };
     }, [isConfirmed, opponentAnswered, timeLeft, showTransition, isGameOver, isLoadingQuestions, questions, currentQuestionIndex, isEndOfRound, setScores, winsNeeded, currentRound, maxRounds, QUESTION_TIME, selectedAnswer, showSetResults]);
 
@@ -921,6 +936,12 @@ const GamePlayView = () => {
         if (showTournamentIntro && tournamentCountdown > 0) {
             timer = setTimeout(() => setTournamentCountdown(prev => prev - 1), 1000);
         } else if (showTournamentIntro && tournamentCountdown === 0) {
+            // CRITICAL FIX: Wait for questions to be fully loaded before starting the game
+            // This prevents the "Initializing..." screen from eating into the 15s timer
+            if (isLoadingQuestions) {
+                return;
+            }
+
             timer = setTimeout(() => {
                 setShowTournamentIntro(false);
                 setGameStage('playing');
@@ -928,7 +949,7 @@ const GamePlayView = () => {
             }, 1000);
         }
         return () => clearTimeout(timer);
-    }, [showTournamentIntro, tournamentCountdown, isTournament]);
+    }, [showTournamentIntro, tournamentCountdown, isTournament, isLoadingQuestions]);
 
     if (fetchError || (!isLoadingQuestions && questions.length === 0)) {
         return (
@@ -948,7 +969,28 @@ const GamePlayView = () => {
         );
     }
 
-    return (
+    // FULL PAGE LOADER
+    // Mask the initial data fetching for a smoother experience
+    // Show this if profile is not ready, OR if in Normal/Bot mode and questions are loading
+    if (!profile || (isLoadingQuestions && !isTournament)) {
+        return (
+            <div className="fixed inset-0 z-[100] bg-neutral-950 flex flex-col items-center justify-center">
+                 <div className="absolute inset-0 bg-dot-pattern opacity-10 animate-pulse"></div>
+                 <div className="flex flex-col items-center gap-6 relative z-10">
+                    <div className="relative">
+                        <div className="w-20 h-20 border-4 border-fuchsia-600/30 border-t-fuchsia-500 rounded-full animate-spin"></div>
+                        <div className="absolute inset-0 flex items-center justify-center">
+                            <Zap size={24} className="text-fuchsia-500 animate-pulse" />
+                        </div>
+                    </div>
+                    <div className="flex flex-col items-center gap-2">
+                        <h2 className="text-2xl font-black text-white tracking-[0.2em] animate-pulse">LOADING</h2>
+                        <p className="text-xs font-bold text-fuchsia-500 uppercase tracking-widest">System Initialization...</p>
+                    </div>
+                 </div>
+            </div>
+        );
+    }
         <div className="min-h-screen bg-black text-white p-4 md:p-8 flex flex-col animate-fade-in relative overflow-y-auto font-sans selection:bg-fuchsia-500 selection:text-white overflow-x-hidden">
             {/* Background Pattern & Glows */}
             <div className="fixed inset-0 bg-dot-pattern opacity-5 pointer-events-none"></div>
@@ -1316,7 +1358,7 @@ const GamePlayView = () => {
             )}
 
             {/* Match Intro Overlay */}
-            {(gameStage === 'preparing' || gameStage === 'starting') && (
+            {!isTournament && (gameStage === 'preparing' || gameStage === 'starting') && (
                 <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-neutral-950 px-4 md:px-0">
                     <div className="absolute inset-0 overflow-hidden">
                         <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_center,rgba(59,130,246,0.1)_0%,transparent_70%)]"></div>
@@ -1360,9 +1402,16 @@ const GamePlayView = () => {
                                 </div>
                             ) : (
                                 <div className="relative flex flex-col items-center animate-in zoom-in-150 duration-500">
-                                    <div className="text-7xl md:text-9xl font-black uppercase tracking-tighter italic text-transparent bg-clip-text bg-gradient-to-b from-white to-gray-400 drop-shadow-[0_0_30px_rgba(255,255,255,0.4)]">
-                                        START!
-                                    </div>
+                                    {isLoadingQuestions ? (
+                                        <>
+                                            <div className="w-16 h-16 border-4 border-white/20 border-t-white rounded-full animate-spin mb-4"></div>
+                                            <div className="text-2xl font-black text-white uppercase tracking-widest animate-pulse">Waiting...</div>
+                                        </>
+                                    ) : (
+                                        <div className="text-7xl md:text-9xl font-black uppercase tracking-tighter italic text-transparent bg-clip-text bg-gradient-to-b from-white to-gray-400 drop-shadow-[0_0_30px_rgba(255,255,255,0.4)]">
+                                            START!
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -1448,7 +1497,7 @@ const GamePlayView = () => {
 
                                      {/* Center Status */}
                                      <div className="flex flex-col items-center gap-4 text-center my-8 md:my-0">
-                                         <div className="px-4 py-1 bg-white/10 rounded-full border border-white/10 text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">Câu hỏi tiếp theo</div>
+                                         <div className="px-4 py-1 bg-white/10 rounded-full border border-white/10 text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">Kết thúc câu hỏi</div>
                                          <div className="text-4xl md:text-6xl font-black text-white italic tracking-tighter uppercase">
                                              {isEndOfRound ? (
                                                  <>
