@@ -237,16 +237,24 @@ export async function fetchQuestions(
 
         const url = `https://opentdb.com/api.php?amount=${amount}${token ? `&token=${token}` : ''}&type=multiple${difficulty ? `&difficulty=${difficulty}` : ''}`;
         
-        // Global rate limit check
+        // Global rate limit check (Persistent)
         const nowTime = Date.now();
+        const storedLastRequest = parseInt(localStorage.getItem('opentdb_last_request') || '0', 10);
+        
+        // Sync in-memory with storage for robustness
+        lastRequestTime = Math.max(lastRequestTime, storedLastRequest);
+        
         const timeSinceLastRequest = nowTime - lastRequestTime;
         if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
             const waitTime = MIN_REQUEST_INTERVAL - timeSinceLastRequest;
-            console.log(`Rate limit prevention: Waiting ${waitTime}ms...`);
+            console.warn(`Rate limit prevention (Persistent): Waiting ${waitTime}ms...`);
             await sleep(waitTime);
         }
 
-        lastRequestTime = Date.now();
+        // Update timestamp immediately before fetch to prevent parallel tabs from racing
+        const requestTime = Date.now();
+        lastRequestTime = requestTime;
+        localStorage.setItem('opentdb_last_request', requestTime.toString());
 
         try {
             const res = await fetch(url);

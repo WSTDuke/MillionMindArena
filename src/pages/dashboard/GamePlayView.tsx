@@ -112,7 +112,7 @@ const GamePlayView = () => {
         const s = location.state as { isTournament?: boolean } | null;
         return !!s?.isTournament;
     });
-    const [tournamentCountdown, setTournamentCountdown] = useState(3);
+    const [tournamentCountdown, setTournamentCountdown] = useState(5);
     // const [clanScores, setClanScores] = useState({ myClan: 0, opponentClan: 0 }); // Removed unused
     
     // 5v5 Simulation State
@@ -744,6 +744,7 @@ const GamePlayView = () => {
     }, [isConfirmed, showTransition, isGameOver, questions, currentQuestionIndex, userId, userScore, isBot, simulateBotAnswer]);
 
     // --- SYNCHRONIZED TRANSITION LOGIC ---
+    // --- SYNCHRONIZED TRANSITION LOGIC ---
     useEffect(() => {
         // Check if we have a buffered answer for the current question index
         const bufferedAnswer = bufferedOpponentAnswers.current.get(currentQuestionIndex);
@@ -756,6 +757,8 @@ const GamePlayView = () => {
         // Condition: Both have answered OR (I have answered and timer is 0)
         const bothReady = isConfirmed && (opponentAnswered !== null || timeLeft === 0);
         
+        // --- STEP 1: TRIGGER TRANSITION ---
+        // This effect ONLY handles the initial trigger when both players are ready.
         if (bothReady && !showTransition && !showSetResults && !isGameOver && !isLoadingQuestions && questions.length > 0 && processedQuestionRef.current !== currentQuestionIndex) {
             
             // Start the timer ONLY if it hasn't started yet for THIS question
@@ -770,104 +773,120 @@ const GamePlayView = () => {
                     const uPoints = selectedAnswer === questions[currentQuestionIndex].correctAnswer ? 1 : 0;
                     
                     setUserScore(prev => prev + uPoints);
-                    pointsRef.current.user += uPoints;
+                    if (pointsRef.current) pointsRef.current.user += uPoints;
                     setRoundPointsHistory(prev => ({ ...prev, user: prev.user + uPoints }));
                     
-                    // UPDATE OPPONENT SCORE (Delayed Reveal) (Code omitted for brevity, matches existing)
+                    // UPDATE OPPONENT SCORE (Delayed Reveal)
                     const buff = bufferedOpponentAnswers.current.get(currentQuestionIndex);
                     if (buff) {
                          if (buff.currentScore !== undefined) {
                             setOpponentScore(buff.currentScore);
-                            pointsRef.current.opponent = buff.currentScore;
+                            if (pointsRef.current) pointsRef.current.opponent = buff.currentScore;
                             setRoundPointsHistory(prev => ({ ...prev, opponent: buff.currentScore! }));
                         } else {
                             setOpponentScore(prev => prev + buff.points);
-                            pointsRef.current.opponent += buff.points;
+                             if (pointsRef.current) pointsRef.current.opponent += buff.points;
                             setRoundPointsHistory(prev => ({ ...prev, opponent: prev.opponent + buff.points }));
                         }
                         setRoundPoints(prev => ({ ...prev, opponent: buff.points }));
                     }
 
                     setShowTransition(true);
-
-                    // Hide transition and move next after 4 seconds
-                    transitionStep2Ref.current = setTimeout(() => {
-                        setShowTransition(false);
-
-                        if (isEndOfRound) {
-                            if (processedRoundRef.current === currentRound) return;
-                            processedRoundRef.current = currentRound;
-
-                            // SAVE ROUND SCORES TO HISTORY
-                            const currentRoundScores = { ...pointsRef.current };
-                            setRoundScoresRecord(prev => [...prev, currentRoundScores]);
-
-                            const finalUserRoundPoints = pointsRef.current.user;
-                            const finalOpponentRoundPoints = pointsRef.current.opponent;
-                            const userWonSet = finalUserRoundPoints > finalOpponentRoundPoints;
-                            const isRoundDraw = finalUserRoundPoints === finalOpponentRoundPoints;
-                            
-                            let newSetScores = { ...setScores };
-
-                            if (!isRoundDraw) {
-                                newSetScores = {
-                                    user: userWonSet ? setScores.user + 1 : setScores.user,
-                                    opponent: userWonSet ? setScores.opponent : setScores.opponent + 1
-                                };
-                                setSetScores(newSetScores);
-                            }
-                            
-                            setShowSetResults(true);
-                            const hasWinner = newSetScores.user >= winsNeeded || newSetScores.opponent >= winsNeeded;
-
-                            setTimeout(() => {
-                                setShowSetResults(false);
-                                pointsRef.current = { user: 0, opponent: 0 };
-                                setRoundPointsHistory({ user: 0, opponent: 0 });
-                                setUserScore(0);
-                                setOpponentScore(0);
-
-                                if (!hasWinner && currentRound < maxRounds) {
-                                    setCurrentQuestionIndex(prev => prev + 1);
-                                    setOpponentAnswered(null);
-                                    
-                                    if (!isTournament) {
-                                        setShowRoundIntro(true);
-                                        setTimeout(() => setShowRoundIntro(false), 2000);
-                                    }
-                                    
-                                    setTimeLeft(QUESTION_TIME);
-                                    setIsConfirmed(false);
-                                    setSelectedAnswer(null);
-                                } else {
-                                    setIsMatchEnding(true);
-                                    setTimeout(() => {
-                                        setIsGameOver(true);
-                                        setIsMatchEnding(false);
-                                    }, 2000);
-                                }
-                            }, 4000);
-                        } else {
-                            // Standard Next Question
-                            setCurrentQuestionIndex(prev => prev + 1);
-                            setOpponentAnswered(null);
-                            setTimeLeft(QUESTION_TIME);
-                            setIsConfirmed(false);
-                            setSelectedAnswer(null);
-                        }
-                        
-                        // Reset timer ref so next question can start its own timer
-                        transitionTimerRef.current = null;
-                    }, 4000);
+                    
+                    // We DO NOT handle the timeout -> next question logic here anymore.
+                    // That is moved to the [showTransition] effect below.
+                    // This ensures cleanup of THIS effect doesn't kill the sequence.
+                    transitionTimerRef.current = null;
                 }, 1000);
             }
         }
 
         return () => {
-             if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
-             if (transitionStep2Ref.current) clearTimeout(transitionStep2Ref.current);
+             if (transitionTimerRef.current) {
+                 clearTimeout(transitionTimerRef.current);
+                 // Note: We might want to NOT clear it if we want it to persist through small re-renders, 
+                 // but standard practice is to clear.
+                 // The Issue was likely that SETTING showTransition(true) caused THIS effect to re-run and clean up step 2.
+             }
         };
-    }, [isConfirmed, opponentAnswered, timeLeft, showTransition, isGameOver, isLoadingQuestions, questions, currentQuestionIndex, isEndOfRound, setScores, winsNeeded, currentRound, maxRounds, QUESTION_TIME, selectedAnswer, showSetResults]);
+    }, [isConfirmed, opponentAnswered, timeLeft, showTransition, isGameOver, isLoadingQuestions, questions, currentQuestionIndex, selectedAnswer, showSetResults]);
+
+
+    // --- STEP 2: HANDLE TRANSITION SEQUENCE ---
+    // This effect runs whenever showTransition becomes TRUE.
+    useEffect(() => {
+        if (showTransition) {
+            console.log("Transition active. Scheduling next step...");
+            const timer = setTimeout(() => {
+                setShowTransition(false);
+
+                // Round/Set Logic
+                if (isEndOfRound) {
+                    if (processedRoundRef.current === currentRound) return;
+                    processedRoundRef.current = currentRound;
+
+                    // SAVE ROUND SCORES TO HISTORY
+                    const currentRoundScores = { ...pointsRef.current };
+                    setRoundScoresRecord(prev => [...prev, currentRoundScores]);
+
+                    const finalUserRoundPoints = pointsRef.current.user;
+                    const finalOpponentRoundPoints = pointsRef.current.opponent;
+                    const userWonSet = finalUserRoundPoints > finalOpponentRoundPoints;
+                    const isRoundDraw = finalUserRoundPoints === finalOpponentRoundPoints;
+                    
+                    let newSetScores = { ...setScores };
+
+                    if (!isRoundDraw) {
+                        newSetScores = {
+                            user: userWonSet ? setScores.user + 1 : setScores.user,
+                            opponent: userWonSet ? setScores.opponent : setScores.opponent + 1
+                        };
+                        setSetScores(newSetScores);
+                    }
+                    
+                    setShowSetResults(true);
+                    const hasWinner = newSetScores.user >= winsNeeded || newSetScores.opponent >= winsNeeded;
+
+                    setTimeout(() => {
+                        setShowSetResults(false);
+                        pointsRef.current = { user: 0, opponent: 0 };
+                        setRoundPointsHistory({ user: 0, opponent: 0 });
+                        setUserScore(0);
+                        setOpponentScore(0);
+
+                        if (!hasWinner && currentRound < maxRounds) {
+                            setCurrentQuestionIndex(prev => prev + 1);
+                            setOpponentAnswered(null);
+                            
+                            if (!isTournament) {
+                                setShowRoundIntro(true);
+                                setTimeout(() => setShowRoundIntro(false), 2000);
+                            }
+                            
+                            setTimeLeft(QUESTION_TIME);
+                            setIsConfirmed(false);
+                            setSelectedAnswer(null);
+                        } else {
+                            setIsMatchEnding(true);
+                            setTimeout(() => {
+                                setIsGameOver(true);
+                                setIsMatchEnding(false);
+                            }, 2000);
+                        }
+                    }, 4000);
+                } else {
+                    // Standard Next Question
+                    setCurrentQuestionIndex(prev => prev + 1);
+                    setOpponentAnswered(null);
+                    setTimeLeft(QUESTION_TIME);
+                    setIsConfirmed(false);
+                    setSelectedAnswer(null);
+                }
+            }, 4000);
+
+            return () => clearTimeout(timer);
+        }
+    }, [showTransition, isEndOfRound, currentRound, maxRounds, isTournament, setScores, winsNeeded, QUESTION_TIME]);
 
     useEffect(() => {
         let timer: ReturnType<typeof setInterval> | ReturnType<typeof setTimeout>;
@@ -931,25 +950,41 @@ const GamePlayView = () => {
 
 
     // --- TOURNAMENT COUNTDOWN ---
+    // --- TOURNAMENT COUNTDOWN (Refactored) ---
     useEffect(() => {
-        let timer: ReturnType<typeof setTimeout>;
-        if (showTournamentIntro && tournamentCountdown > 0) {
-            timer = setTimeout(() => setTournamentCountdown(prev => prev - 1), 1000);
-        } else if (showTournamentIntro && tournamentCountdown === 0) {
-            // CRITICAL FIX: Wait for questions to be fully loaded before starting the game
-            // This prevents the "Initializing..." screen from eating into the 15s timer
-            if (isLoadingQuestions) {
-                return;
-            }
+        // 1. Wait until fully loaded
+        if (isLoadingQuestions) return;
+        
+        // 2. Only run if we are in tournament intro mode
+        if (!showTournamentIntro || !isTournament) return;
 
-            timer = setTimeout(() => {
-                setShowTournamentIntro(false);
-                setGameStage('playing');
-                // Trigger first question simulation?
+        // 3. Start Countdown (Using setInterval with functional update to strict-mode proof)
+        // Only start if count > 0. If 0, we handle transition below.
+        if (tournamentCountdown > 0) {
+            const timer = setInterval(() => {
+                setTournamentCountdown((prev) => {
+                    if (prev <= 1) {
+                        clearInterval(timer);
+                        return 0; 
+                    }
+                    return prev - 1;
+                });
             }, 1000);
+            return () => clearInterval(timer);
+        } else if (tournamentCountdown === 0) {
+            // 4. Handle "START" / "FIGHT" Transition
+            // Keep "START" on screen for 0.5 seconds (reduced from 1s), then switch stage.
+            const transitionTimer = setTimeout(() => {
+                setGameStage('playing');
+                // Keep overlay for a brief moment to ensure seamless transition to Question UI
+                setTimeout(() => {
+                    setShowTournamentIntro(false);
+                }, 500); 
+            }, 500);
+            
+            return () => clearTimeout(transitionTimer);
         }
-        return () => clearTimeout(timer);
-    }, [showTournamentIntro, tournamentCountdown, isTournament, isLoadingQuestions]);
+    }, [isLoadingQuestions, showTournamentIntro, isTournament, tournamentCountdown === 0]); // Dependency on the boolean prevents constant re-creation unless state flips
 
     if (fetchError || (!isLoadingQuestions && questions.length === 0)) {
         return (
@@ -971,8 +1006,9 @@ const GamePlayView = () => {
 
     // FULL PAGE LOADER
     // Mask the initial data fetching for a smoother experience
-    // Show this if profile is not ready, OR if in Normal/Bot mode and questions are loading
-    if (!profile || (isLoadingQuestions && !isTournament)) {
+    // Show this if profile is not ready, OR if questions are still loading (for ALL modes)
+    // This ensures countdown never starts until data is ready.
+    if (!profile || isLoadingQuestions) {
         return (
             <div className="fixed inset-0 z-[100] bg-neutral-950 flex flex-col items-center justify-center">
                  <div className="absolute inset-0 bg-dot-pattern opacity-10 animate-pulse"></div>
@@ -984,14 +1020,16 @@ const GamePlayView = () => {
                         </div>
                     </div>
                     <div className="flex flex-col items-center gap-2">
-                        <h2 className="text-2xl font-black text-white tracking-[0.2em] animate-pulse">LOADING</h2>
-                        <p className="text-xs font-bold text-fuchsia-500 uppercase tracking-widest">System Initialization...</p>
+                        <h2 className="text-2xl font-black text-white tracking-[0.2em] animate-pulse">CHUẨN BỊ THI ĐẤU</h2>
+                        <p className="text-xs font-bold text-fuchsia-500 uppercase tracking-widest">ĐANG LẤY CÂU HỎI...</p>
                     </div>
                  </div>
             </div>
         );
     }
-        <div className="min-h-screen bg-black text-white p-4 md:p-8 flex flex-col animate-fade-in relative overflow-y-auto font-sans selection:bg-fuchsia-500 selection:text-white overflow-x-hidden">
+    
+    return (
+        <div className="h-screen bg-black text-white p-4 md:p-8 flex flex-col animate-fade-in relative overflow-hidden font-sans selection:bg-fuchsia-500 selection:text-white">
             {/* Background Pattern & Glows */}
             <div className="fixed inset-0 bg-dot-pattern opacity-5 pointer-events-none"></div>
             <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-blue-600/10 blur-[120px] pointer-events-none"></div>
@@ -1870,9 +1908,9 @@ const GamePlayView = () => {
                                          {tournamentCountdown}
                                      </span>
                                  ) : (
-                                     <span className="text-6xl font-black text-fuchsia-500 italic tracking-tighter animate-ping">
-                                         FIGHT!
-                                     </span>
+                                     <span className="text-6xl font-black text-fuchsia-500 italic tracking-tighter animate-in zoom-in-50 duration-300">
+                                        FIGHT!
+                                    </span>
                                  )}
                              </div>
 
