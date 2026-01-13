@@ -62,6 +62,7 @@ interface ClanInfo {
   members_count?: number;
 }
 
+
 interface DashboardContext {
   dashboardCache: {
     clanInfo?: ClanInfo | null;
@@ -127,25 +128,6 @@ const TournamentDetailView = () => {
 
   const [showConfirmModal, setShowConfirmModal] = useState(false);
 
-  const [tournament, setTournament] = useState<Tournament | null>(null);
-  const [registrations, setRegistrations] = useState<TournamentRegistration[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [isRegistered, setIsRegistered] = useState(false);
-  const [isRegistering, setIsRegistering] = useState(false);
-  const [currentTime, setCurrentTime] = useState(new Date().getTime());
-  const [toast, setToast] = useState<{ message: React.ReactNode, type: ToastType } | null>(null);
-  const [showErrorModal, setShowErrorModal] = useState(false);
-  const [errorType, setErrorType] = useState<'role' | 'no-clan' | 'member-count' | null>(null);
-
-  // Tournament Timing & Bracket State
-  const [phase, setPhase] = useState<TournamentPhase>('waiting');
-  const [matches, setMatches] = useState<Match[]>([]);
-  const [timeLeft, setTimeLeft] = useState<number>(0);
-
-  // Dropdown state
-  const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
   // Use the clan info from global cache
   const clanInfo = dashboardCache.clanInfo;
 
@@ -175,13 +157,38 @@ const TournamentDetailView = () => {
     ]
   }), []);
 
+  const [tournament, setTournament] = useState<Tournament | null>(defaultTournament);
+  const [registrations, setRegistrations] = useState<TournamentRegistration[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isRegistered, setIsRegistered] = useState(false);
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [currentTime, setCurrentTime] = useState(new Date().getTime());
+  const [toast, setToast] = useState<{ message: React.ReactNode, type: ToastType } | null>(null);
+  const [showErrorModal, setShowErrorModal] = useState(false);
+  const [errorType, setErrorType] = useState<'role' | 'no-clan' | 'member-count' | null>(null);
+  
+  const currentData = tournament || defaultTournament;
+
+  // Tournament Timing & Bracket State
+  const [phase, setPhase] = useState<TournamentPhase>('waiting');
+  const [matches, setMatches] = useState<Match[]>([]);
+  const [timeLeft, setTimeLeft] = useState<number>(0);
+  const [isFetchingRegs, setIsFetchingRegs] = useState(true);
+
+  // Dropdown state
+  const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
   const fetchTournamentData = useCallback(async () => {
     if (!id) return;
-    setLoading(true);
-    try {
-        // 1. Fetch Tournament Details
-        setTournament(defaultTournament); 
+    
+    // Immediate render of tournament info (parallel)
+    // setTournament(defaultTournament); // Initialized in useState now
 
+    // Fetch registrations in background
+    setIsFetchingRegs(true);
+    
+    try {
         // 2. Fetch Registrations (Real Data)
         const { data: regData, error: regError } = await supabase
             .from('tournament_registrations')
@@ -209,18 +216,22 @@ const TournamentDetailView = () => {
         })) as unknown as TournamentRegistration[];
 
         setRegistrations(formattedRegs || []);
-
-        // 3. Check if current user's clan is registered
-        if (clanInfo?.id) {
-            const isReg = formattedRegs?.some(r => r.clan_id === clanInfo.id && ['confirmed', 'approved'].includes(r.status));
-            setIsRegistered(!!isReg);
-        }
-        setLoading(false);
+         // Removed "Check if current user's clan is registered" from here
     } catch (err) {
         console.error('Error in fetchTournamentData:', err);
-        setLoading(false);
+    } finally {
+        setIsFetchingRegs(false);
+        setLoading(false); 
     }
-  }, [id, clanInfo?.id, defaultTournament]);
+  }, [id]); // Removed clanInfo?.id and defaultTournament from dependencies
+
+  // Separate effect to check registration status when data or clanInfo updates
+  useEffect(() => {
+    if (clanInfo?.id && registrations.length > 0) {
+        const isReg = registrations.some(r => r.clan_id === clanInfo.id && ['confirmed', 'approved'].includes(r.status));
+        setIsRegistered(!!isReg);
+    }
+  }, [registrations, clanInfo?.id]);
 
   // Phase & Bracket Management Logic
   useEffect(() => {
@@ -258,7 +269,21 @@ const TournamentDetailView = () => {
       const savedBracket = localStorage.getItem(storageKey);
 
       if (savedBracket) {
-        setMatches(JSON.parse(savedBracket));
+        const parsedMatches: Match[] = JSON.parse(savedBracket);
+        // Count unique clans in round 1 of the saved bracket
+        const r1Clans = parsedMatches.filter(m => m.round === 1).reduce((acc, m) => {
+          if (m.clan1) acc.add(m.clan1.id);
+          if (m.clan2) acc.add(m.clan2.id);
+          return acc;
+        }, new Set<string>());
+        
+        // If the number of real clans in the saved bracket doesn't match the current registrations, clear it
+        if (r1Clans.size !== registrations.length) {
+          localStorage.removeItem(storageKey);
+          setMatches([]);
+          return; // Next render will regenerate
+        }
+        setMatches(parsedMatches);
       } else {
         const N = registrations.length;
         if (N === 0) return;
@@ -423,7 +448,6 @@ const TournamentDetailView = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const currentData = tournament || defaultTournament;
   const currentParticipants = registrations.length;
   const maxParticipants = currentData.max_participants;
   const isFull = currentParticipants >= maxParticipants;
@@ -513,7 +537,7 @@ const TournamentDetailView = () => {
               <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/20"><Users size={24} className="text-blue-500" /></div>
               <div className="flex flex-col">
                 <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Số đội tham gia</span>
-                {tournament ? (
+                {tournament && !isFetchingRegs ? (
                   <span className="text-xl font-black text-white italic">{participantsDisplay}</span>
                 ) : (
                   <SkeletonBox className="h-6 w-16 mt-1" />
@@ -547,7 +571,7 @@ const TournamentDetailView = () => {
           </div>
 
           <div className="p-6 bg-neutral-900/50 border border-white/5 rounded-xl min-h-[300px]">
-            {loading ? (
+            {activeTab !== 'overview' && isFetchingRegs ? (
               <div className="space-y-6">
                 <SkeletonBox className="h-6 w-48 mb-6" />
                 <div className="space-y-4">
@@ -658,19 +682,52 @@ const TournamentDetailView = () => {
 
              {activeTab === 'match' && (
                <div className="space-y-4">
-                 {matches.filter(m => m.clan1 || m.clan2).length === 0 ? (
+                 {phase === 'waiting' && (
                     <div className="flex flex-col items-center justify-center h-80 border border-white/5 bg-black/40 rounded-2xl relative overflow-hidden group">
-                       <div className="absolute inset-0 bg-dot-pattern opacity-5" />
-                       <div className="p-6 bg-fuchsia-500/20 rounded-full mb-6 relative">
-                         <Swords size={48} className="text-fuchsia-500/30 animate-pulse" />
-                       </div>
-                       <h3 className="text-xl font-black text-white uppercase tracking-tighter italic mb-2">Danh sách trận đấu</h3>
-                       <p className="text-gray-500 text-xs font-bold uppercase tracking-widest text-center max-w-xs">Các trận đấu sẽ xuất hiện khi giải đấu bắt đầu (Lúc {TOURNAMENT_CONFIG.DISPLAY_TIME})</p>
+                      <div className="absolute inset-0 bg-dot-pattern opacity-5" />
+                      <div className="p-6 bg-fuchsia-500/20 rounded-full mb-6 relative">
+                        <Swords size={48} className="text-fuchsia-500/30 animate-pulse" />
+                      </div>
+                      <h3 className="text-xl font-black text-white uppercase tracking-tighter italic mb-2">Danh sách trận đấu</h3>
+                      <p className="text-gray-500 text-xs font-bold uppercase tracking-widest text-center max-w-xs">Các trận đấu sẽ xuất hiện khi giải đấu bắt đầu (Lúc {TOURNAMENT_CONFIG.DISPLAY_TIME})</p>
                     </div>
-                 ) : (
-                   <div className="grid grid-cols-1 gap-4 animate-in fade-in slide-in-from-bottom-4 duration-700">
-                     {matches
-                       .filter(m => m.clan1 || m.clan2)
+                 )}
+
+                 {phase === 'shuffling' && (
+                    <div className="flex flex-col items-center justify-center h-[400px] border border-fuchsia-500/20 bg-fuchsia-950/5 rounded-2xl relative overflow-hidden">
+                      <div className="absolute inset-0 bg-scanline-fast opacity-10" />
+                      <div className="relative z-10 flex flex-col items-center">
+                        <div className="w-24 h-24 relative mb-8">
+                          <Loader2 size={96} className="text-fuchsia-500 animate-spin opacity-50 absolute inset-0" />
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <Trophy size={32} className="text-white animate-bounce" />
+                          </div>
+                        </div>
+                        <h3 className="text-2xl font-black text-white uppercase italic tracking-tighter mb-4 animate-pulse">Đang xáo trộn bắt cặp...</h3>
+                        <div className="flex gap-2">
+                          {[1, 2, 3].map(i => (
+                            <div key={i} className="w-2 h-2 bg-fuchsia-500 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.2}s` }} />
+                          ))}
+                        </div>
+                        <p className="mt-8 text-[10px] font-black text-fuchsia-500 uppercase tracking-[0.3em] italic">Vui lòng chờ trong {timeLeft} giây</p>
+                      </div>
+                    </div>
+                 )}
+
+                 {(phase === 'preparation' || phase === 'live' || phase === 'completed') && (
+                   matches.filter(m => m.clan1 || m.clan2).length === 0 ? (
+                      <div className="flex flex-col items-center justify-center h-80 border border-white/5 bg-black/40 rounded-2xl relative overflow-hidden group">
+                        <div className="absolute inset-0 bg-dot-pattern opacity-5" />
+                        <div className="p-6 bg-fuchsia-500/20 rounded-full mb-6 relative">
+                           <Swords size={48} className="text-fuchsia-500/30 animate-pulse" />
+                        </div>
+                        <h3 className="text-xl font-black text-white uppercase tracking-tighter italic mb-2">Chưa có trận đấu nào</h3>
+                        <p className="text-gray-500 text-xs font-bold uppercase tracking-widest text-center max-w-xs">Đang cập nhật dữ liệu...</p>
+                      </div>
+                   ) : (
+                     <div className="grid grid-cols-1 gap-4 animate-in fade-in slide-in-from-bottom-4 duration-700">
+                       {matches
+                         .filter(m => m.clan1 || m.clan2)
                        .sort((a, b) => {
                          // Sorting priority: live > initial/waiting > completed
                          const getPriority = (m: Match) => {
@@ -716,7 +773,7 @@ const TournamentDetailView = () => {
                                  )}
                                  {isCompleted && (
                                    <div className="px-2.5 py-1 bg-green-500/10 border border-green-500/20 rounded-md">
-                                     <span className="text-[10px] font-black text-green-500 uppercase tracking-widest">Đã xong</span>
+                                     <span className="text-[10px] font-black text-green-500 uppercase tracking-widest">Kết thúc</span>
                                    </div>
                                  )}
                                </div>
@@ -785,8 +842,8 @@ const TournamentDetailView = () => {
                            </div>
                          );
                        })}
-                   </div>
-
+                     </div>
+                   )
                  )}
                </div>
              )}
@@ -800,7 +857,7 @@ const TournamentDetailView = () => {
             <div className="absolute inset-0 bg-gradient-to-br from-fuchsia-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
             <div className="relative z-10">
               <h3 className="text-sm font-black text-white uppercase tracking-widest mb-6 border-b border-fuchsia-500/30 pb-3">Thông tin đăng ký</h3>
-              {loading ? (
+              {isFetchingRegs ? (
                 <div className="space-y-4 mb-8">
                   <div className="flex justify-between items-center"><SkeletonBox className="h-4 w-16" /><SkeletonBox className="h-4 w-20" /></div>
                   <div className="flex justify-between items-center"><SkeletonBox className="h-4 w-32" /><SkeletonBox className="h-8 w-24" /></div>
@@ -813,7 +870,13 @@ const TournamentDetailView = () => {
                   <div className="flex justify-between items-center text-sm"><span className="text-gray-500 font-bold">Chế độ</span><span className="text-white font-black">{currentData.tournament_type} Clan</span></div>
                 </div>
               )}
-              <button onClick={handleRegisterClick} disabled={isFull || isRegistered || isRegistering || loading} className={`w-full py-4 text-xs font-black uppercase tracking-[0.2em] transition-all shadow-lg flex items-center justify-center gap-2 ${isFull || isRegistered || loading ? 'bg-neutral-800 text-gray-500 cursor-not-allowed border border-white/5' : 'bg-fuchsia-600 hover:bg-fuchsia-500 text-white group-hover:shadow-[0_0_20px_rgba(192,38,211,0.4)]'}`}>{isRegistering ? (<Loader2 className="animate-spin" size={16} />) : isRegistered ? 'Đã đăng ký' : isFull ? 'Đã đóng (Full)' : <>{'Đăng ký ngay'} <ChevronRight size={16} /></>}</button>
+              <button onClick={handleRegisterClick} disabled={isFull || isRegistered || isRegistering || isFetchingRegs} className={`w-full py-4 text-xs font-black uppercase tracking-[0.2em] transition-all shadow-lg flex items-center justify-center gap-2 ${isFull || isRegistered || isFetchingRegs ? 'bg-neutral-800 text-gray-500 cursor-not-allowed border border-white/5' : 'bg-fuchsia-600 hover:bg-fuchsia-500 text-white group-hover:shadow-[0_0_20px_rgba(192,38,211,0.4)]'}`}>
+                {isRegistering ? <Loader2 className="animate-spin" size={16} /> : 
+                 isFetchingRegs ? <span className="flex items-center gap-2"><Loader2 className="animate-spin" size={14} /> LOADING...</span> :
+                 isRegistered ? 'Đã đăng ký' : 
+                 isFull ? 'Đã đóng (Full)' : 
+                 <>{'Đăng ký ngay'} <ChevronRight size={16} /></>}
+              </button>
             </div>
           </div>    
           <div className="p-6 bg-neutral-900 border border-white/5 rounded-xl"><h3 className="text-sm font-black text-white uppercase tracking-widest mb-6 border-b border-white/10 pb-3">Tin tức liên quan</h3><div className="space-y-4">{[1, 2].map(i => (<div key={i} className="group cursor-pointer"><span className="text-[10px] text-fuchsia-500 font-bold uppercase mb-1 block">Tin tức</span><h4 className="text-sm font-bold text-gray-300 group-hover:text-white transition-colors leading-tight mb-2">Cập nhật thay đổi luật thi đấu mùa giải 2025</h4><span className="text-[10px] text-gray-600 flex items-center gap-2"><Clock size={10} /> 2 giờ trước</span></div>))}</div></div>

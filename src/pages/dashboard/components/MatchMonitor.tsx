@@ -1,82 +1,47 @@
-import { useEffect, useState, useCallback } from 'react';
-import { supabase } from '../../../lib/supabase';
+import { useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { TOURNAMENT_CONFIG } from '../../../lib/constants';
-import { getRankFromMMR } from '../../../lib/ranking';
-
-interface MatchMember {
-  id: string;
-  name: string;
-  avatar?: string;
-  rank: string;
-  rankColor: string;
-}
-
-interface ClanInfo {
-  id: string;
-  name: string;
-  tag: string;
-  icon: string;
-  color: string;
-}
 
 interface MatchMonitorProps {
   userClanId: string | undefined;
-  onMatchDetected: (matchData: { matchId: string, clan1: ClanInfo, clan2: ClanInfo | null, members1: MatchMember[], members2: MatchMember[], matchTime: string }) => void;
-  isOpen: boolean;
 }
 
-const MatchMonitor = ({ userClanId, onMatchDetected, isOpen }: MatchMonitorProps) => {
-  const [lastMatchId, setLastMatchId] = useState<string | null>(null);
-
-  const fetchClanMembers = useCallback(async (clanId: string): Promise<MatchMember[]> => {
-    try {
-      const { data: memberData, error } = await supabase
-        .from('clan_members')
-        .select(`
-          user_id,
-          profiles (
-            id,
-            display_name,
-            avatar_url,
-            mmr
-          )
-        `)
-        .eq('clan_id', clanId)
-        .eq('status', 'approved')
-        .limit(5);
-
-      if (error) throw error;
-
-      return memberData.map(m => {
-        const prof = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles;
-        const rankInfo = getRankFromMMR(prof?.mmr || 0);
-        return {
-          id: prof?.id || Math.random().toString(),
-          name: prof?.display_name || 'Chiến Binh',
-          avatar: prof?.avatar_url || undefined,
-          rank: `${rankInfo.tier} ${rankInfo.division}`,
-          rankColor: rankInfo.color
-        };
-      });
-    } catch (err) {
-      console.error('Error fetching clan members for overlay:', err);
-      // Mock fallback if failed or empty
-      return Array.from({ length: 5 }).map((_, i) => ({
-        id: `mock-${i}`,
-        name: `Elite Player ${i + 1}`,
-        rank: 'GOLD IV',
-        rankColor: '#fbbf24'
-      }));
-    }
+const MatchMonitor = ({ userClanId }: MatchMonitorProps) => {
+  const navigate = useNavigate();
+  
+  // Clear navigation history when component mounts (user returns to dashboard)
+  // This allows re-navigation if they come back
+  useEffect(() => {
+    sessionStorage.removeItem('navigated_matches');
+    console.log('[MatchMonitor] Cleared navigation history');
   }, []);
+  
+  // Debug: Log userClanId changes
+  useEffect(() => {
+    console.log('[MatchMonitor] userClanId changed:', userClanId);
+  }, [userClanId]);
+  
+  // We use sessionStorage to track which matches we've already auto-navigated to,
+  // preventing infinite loops if the user clicks "Back".
+  const getNavigatedMatches = () => {
+      try {
+          return JSON.parse(sessionStorage.getItem('navigated_matches') || '[]');
+      } catch { return []; }
+  };
 
   useEffect(() => {
-    if (isOpen || !userClanId) return;
+    if (!userClanId) {
+      console.log('[MatchMonitor] No userClanId, skipping check');
+      return;
+    }
 
-    const checkInterval = setInterval(async () => {
+    const checkInterval = setInterval(() => {
       const storageKey = `bracket_${TOURNAMENT_CONFIG.ID}_${TOURNAMENT_CONFIG.START_TIME}`;
       const savedBracketStr = localStorage.getItem(storageKey);
-      if (!savedBracketStr) return;
+      if (!savedBracketStr) {
+        console.log('[MatchMonitor] No bracket found in localStorage');
+        return;
+      }
 
       const matches = JSON.parse(savedBracketStr);
       const now = new Date().getTime();
@@ -87,39 +52,40 @@ const MatchMonitor = ({ userClanId, onMatchDetected, isOpen }: MatchMonitorProps
         m.status !== 'completed'
       );
 
-      if (myMatch && myMatch.id !== lastMatchId) {
+      if (myMatch) {
         const matchStartTime = new Date(myMatch.scheduledTime).getTime();
         const diffSeconds = (matchStartTime - now) / 1000;
+        
+        console.log('[MatchMonitor] Found match:', {
+          matchId: myMatch.id,
+          status: myMatch.status,
+          scheduledTime: myMatch.scheduledTime,
+          diffSeconds: Math.round(diffSeconds),
+          now: new Date(now).toISOString()
+        });
 
-        // Trigger if match starts in less than 35 seconds (buffer)
-        if (diffSeconds <= 35 && diffSeconds > -30) {
-          const isClan1User = myMatch.clan1?.id === userClanId;
-          const userClan = isClan1User ? myMatch.clan1 : myMatch.clan2;
-          const opponentClan = isClan1User ? myMatch.clan2 : myMatch.clan1;
-
-          if (!userClan) return; // Should not happen
-
-          // Fetch members
-          const [m1, m2] = await Promise.all([
-             fetchClanMembers(userClan.id),
-             opponentClan ? fetchClanMembers(opponentClan.id) : Promise.resolve([])
-          ]);
-
-          onMatchDetected({
-            matchId: myMatch.id,
-            clan1: userClan,
-            clan2: opponentClan,
-            members1: m1,
-            members2: m2,
-            matchTime: new Date(myMatch.scheduledTime).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
-          });
-          setLastMatchId(myMatch.id);
+        // Trigger if match starts in less than 60 seconds or is already live (within 5 minutes)
+        // Increased window to ensure we don't miss the match
+        if (diffSeconds <= 60 && diffSeconds > -300) {
+           const navigated = getNavigatedMatches();
+           if (!navigated.includes(myMatch.id)) {
+               console.log('[MatchMonitor] Navigating to match:', myMatch.id);
+               // Mark as navigated
+               sessionStorage.setItem('navigated_matches', JSON.stringify([...navigated, myMatch.id]));
+               
+               // Navigate
+               navigate(`/tournament-match/${myMatch.id}`);
+           } else {
+               console.log('[MatchMonitor] Already navigated to this match');
+           }
         }
+      } else {
+        console.log('[MatchMonitor] No active match found for clan:', userClanId);
       }
-    }, 5000); // Check every 5 seconds
+    }, 3000); // Check every 3 seconds (more frequent)
 
     return () => clearInterval(checkInterval);
-  }, [userClanId, onMatchDetected, isOpen, lastMatchId, fetchClanMembers]);
+  }, [userClanId, navigate]);
 
   return null;
 };

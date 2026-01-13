@@ -13,6 +13,7 @@ import ClanView from "../pages/dashboard/ClanView"
 import Home from "../pages/home/HomePage"
 import RankingView from "../pages/dashboard/RankingView"
 import PaymentView from "../pages/dashboard/PaymentView"
+import TournamentMatchView from "../pages/dashboard/TournamentMatchView"
 import NotFoundPage from "../pages/error/NotFoundPage"
 import { ProtectedRoute, GuestRoute } from "../components/auth/AuthGuard"
 
@@ -101,6 +102,14 @@ export const routes = [
         element: PaymentView,
       }
     ]
+  },
+  {
+    path: "/tournament-match/:matchId",
+    element: () => (
+      <ProtectedRoute>
+        <TournamentMatchView />
+      </ProtectedRoute>
+    ),
   },
   {
     path: "/gameplay",

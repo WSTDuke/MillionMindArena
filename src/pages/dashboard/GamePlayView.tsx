@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { Trophy, HelpCircle, Zap, Shield, LogOut, Loader2, Flag } from 'lucide-react';
 
 import { supabase } from '../../lib/supabase';
@@ -19,6 +19,14 @@ interface Profile {
     mmr?: number | null;
 }
 
+interface ClanMemberResult {
+    id: string;
+    name: string;
+    avatar: string;
+    isCorrect: boolean | null; // null = viewing question, true/false = answered
+    score: number;
+}
+
 interface Participant {
     id: string;
     display_name: string;
@@ -30,6 +38,7 @@ interface Participant {
 
 const GamePlayView = () => {
     const navigate = useNavigate();
+    const location = useLocation();
     const [searchParams] = useSearchParams();
     const mode = searchParams.get('mode') || 'Normal';
     const isRanked = mode.toLowerCase() === 'ranked';
@@ -89,6 +98,21 @@ const GamePlayView = () => {
     const [opponent, setOpponent] = useState<Participant | null>(null);
     const [opponentAnswered, setOpponentAnswered] = useState<{ isCorrect: boolean, points: number } | null>(null);
 
+    // --- TOURNAMENT STATE ---
+    const [isTournament, setIsTournament] = useState(false);
+    const [showTournamentIntro, setShowTournamentIntro] = useState(false);
+    const [tournamentCountdown, setTournamentCountdown] = useState(3);
+    // const [clanScores, setClanScores] = useState({ myClan: 0, opponentClan: 0 }); // Removed unused
+    
+    // 5v5 Simulation State
+    // "Me" is index 0 of myClanMembers. 4 AI teammates.
+    // 5 AI opponents.
+    const [myClanMembers, setMyClanMembers] = useState<ClanMemberResult[]>([]);
+    const [opponentClanMembers, setOpponentClanMembers] = useState<ClanMemberResult[]>([]);
+    const [myClanData, setMyClanData] = useState<{name: string, icon: string} | null>(null);
+    const [oppClanData, setOppClanData] = useState<{name: string, icon: string} | null>(null);
+
+
     const questionsPerRound = roomSettings?.questions_per_round || 10;
     const matchFormat = roomSettings?.format || (isRanked ? 'Bo5' : 'Bo3');
     
@@ -109,12 +133,12 @@ const GamePlayView = () => {
     const questionNumberInRound = (currentQuestionIndex % questionsPerRound) + 1;
     const isEndOfRound = questionNumberInRound === questionsPerRound;
     const question = questions[currentQuestionIndex];
-    const hasFetched = useRef(false);
 
 
     useEffect(() => {
         // Redirect if state is lost (e.g., page reload)
-        if (!roomId && !isBot) {
+        const locState = location.state as any;
+        if (!roomId && !isBot && !locState?.isTournament) {
             navigate('/dashboard/arena');
             return;
         }
@@ -129,7 +153,89 @@ const GamePlayView = () => {
                 }
                 setUserId(user.id);
 
-                // 2. BOT MODE: Pre-populate opponent and fetch questions locally
+                // 2. BOT MODE / TOURNAMENT MODE
+                const locState = (location as any).state;
+                if (locState?.isTournament) {
+                    setIsTournament(true);
+                    setShowTournamentIntro(true);
+                    const tData = locState.tournamentMatchData;
+                    
+                    // Store clan data for icons
+                    setMyClanData({
+                        name: tData.clan1?.name || "MY CLAN",
+                        icon: tData.clan1?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan1"
+                    });
+                    setOppClanData({
+                        name: tData.clan2?.name || "OPP CLAN",
+                        icon: tData.clan2?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan2"
+                    });
+                    
+                    // Setup Mock Teammates & Opponents based on passed data
+                    // We need to construct 4 teammates + Me, and 5 opponents.
+                    
+                    // My Clan Members (Me + 4 others)
+                    // We can use the member lists passed in tData.
+                    // Assuming members1 is MY clan if I navigated.
+                    // Let's assume members1 is ALWAYS "Left" (My Clan) for simplicity in this view context
+                    // and members2 is "Right" (Opponent Clan).
+                    
+                    const myM = tData.members1 || [];
+                    const opM = tData.members2 || [];
+                    
+                    // Find ME in members1. If not there, maybe I'm in members2? 
+                    // For now, let's just take the first 4 OTHER members as teammates.
+                    const otherTeammates = myM.filter((m: any) => m.id !== user.id).slice(0, 4);
+                    
+                    const myTeamState: ClanMemberResult[] = otherTeammates.map((m: any) => ({
+                        id: m.id,
+                        name: m.name,
+                        avatar: m.avatar,
+                        isCorrect: null,
+                        score: 0
+                    }));
+                    
+                    // Add ME to the list (logic handles me separately usually, but for visualization we might need list)
+                    // Actually, let's keep ME separate in standard logic, but visualized together.
+                    setMyClanMembers(myTeamState);
+
+                    const opTeamState: ClanMemberResult[] = opM.map((m: any) => ({
+                         id: m.id,
+                         name: m.name,
+                         avatar: m.avatar,
+                         isCorrect: null,
+                         score: 0
+                    }));
+                    setOpponentClanMembers(opTeamState);
+
+                    // Set Opponent Display for the 1v1 legacy slot (Optional, maybe show Clan Leader)
+                    setOpponent({
+                        id: 'clan-leader',
+                        display_name: tData.clan2?.name || "Opponent Clan",
+                        avatar_url: tData.clan2?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=opp",
+                        is_ready: true,
+                        is_host: false,
+                        rank: 'Clan War'
+                    });
+
+                    // Fetch Profile
+                    const profileRes = await supabase.from('profiles').select('*').eq('id', user.id).single();
+                    if (profileRes.data) setProfile(profileRes.data);
+
+                    // Fetch Questions or Use Mock
+                    // Fetch 30 questions for 3 rounds (10 per round)
+                    const qRes = await fetchQuestions(30, 'easy', user.id); 
+                    setQuestions(qRes);
+                    
+                    // Set Room Settings for Tournament
+                    setRoomSettings({
+                         questions_per_round: 10,
+                         format: 'Bo3' // Best of 3 Rounds
+                    });
+                    
+                    setIsLoadingQuestions(false);
+                    return;
+                }
+
                 if (isBot || roomId?.startsWith('bot-local-')) {
                     console.log('BOT mode detected: Initializing AI opponent');
                     
@@ -148,11 +254,11 @@ const GamePlayView = () => {
                     const profileRes = await supabase.from('profiles').select('*').eq('id', user.id).single();
                     if (profileRes.data) setProfile(profileRes.data);
 
-                    // Set BOT room settings
                     setRoomSettings({
                         format: 'Bo3',
                         questions_per_round: 5
                     });
+
 
                     // Use hardcoded questions to avoid API rate limit
                     const hardcodedQuestions: ProcessedQuestion[] = Array.from({ length: 15 }, (_, i) => ({
@@ -518,31 +624,58 @@ const GamePlayView = () => {
 
     // --- BOT AI ANSWER SIMULATION ---
     const simulateBotAnswer = useCallback((questionIndex: number) => {
-        if (!isBot || !questions[questionIndex]) return;
+        if ((!isBot && !isTournament) || !questions[questionIndex]) return;
 
-        const delay = 2000 + Math.random() * 2000; // 2-4 seconds random delay
-        const accuracy = 0.65; // 65% correct rate
+        const delay = 2000 + Math.random() * 2000; // 2-4 seconds
+        const accuracy = 0.65; 
 
         setTimeout(() => {
-            const currentQ = questions[questionIndex];
+            // 1. Simulate Main Bot Opponent (for 1v1 UI compatibility)
             const isCorrect = Math.random() < accuracy;
-            const answerIndex = isCorrect 
-                ? currentQ.correctAnswer 
-                : Math.floor(Math.random() * 4);
+            const points = isCorrect ? 1 : 0;
+
+            if (isBot) {
+                 setOpponentAnswered({ isCorrect, points });
+                 setRoundPoints((prev) => ({ ...prev, opponent: points }));
+            }
+
+            // 2. TOURNAMENT 5v5 SIMULATION
+            if (isTournament) {
+                // Simulate 4 Teammates
+                setMyClanMembers(prev => prev.map(m => {
+                    const isTeammateCorrect = Math.random() < 0.6; // 60% chance
+                    return {
+                        ...m,
+                        isCorrect: isTeammateCorrect,
+                        score: m.score + (isTeammateCorrect ? 1 : 0)
+                    };
+                }));
+
+                // Simulate 5 Opponents
+                setOpponentClanMembers(prev => prev.map(m => {
+                    const isOppCorrect = Math.random() < 0.6;
+                    return {
+                        ...m,
+                        isCorrect: isOppCorrect,
+                        score: m.score + (isOppCorrect ? 1 : 0)
+                    };
+                }));
+
+                // Update Clan Scores
+                // My Clan Score = My Points + Teammates Points
+                // But wait, "My Points" are added when *I* answer. 
+                // We need to decouple this. 
+                // Let's add Opponents points now. 
+                // My teammates points should be added when *I* answer OR when revealed.
+                // For simplicity, let's reveal everyone when the "Round Transition" happens.
+                
+                // Store round result for batch update later?
+                // Or just update state now but hidden?
+                // Let's update state now, effectively "answering".
+            }
             
-            const botPoints = answerIndex === currentQ.correctAnswer ? 1 : 0;
-            
-            console.log(`BOT answered question ${questionIndex}: ${isCorrect ? 'Correct' : 'Wrong'}`);
-            
-            // Update opponent answer state
-            setOpponentAnswered({
-                isCorrect,
-                points: botPoints
-            });
-            
-            setRoundPoints((prev) => ({ ...prev, opponent: botPoints }));
         }, delay);
-    }, [isBot, questions]);
+    }, [isBot, isTournament, questions]);
 
     const handleAnswerSelect = useCallback((index: number) => {
         if (isConfirmed || showTransition || isGameOver || !questions[currentQuestionIndex]) return;
@@ -679,8 +812,12 @@ const GamePlayView = () => {
                                 if (!hasWinner && currentRound < maxRounds) {
                                     setCurrentQuestionIndex(prev => prev + 1);
                                     setOpponentAnswered(null);
-                                    setShowRoundIntro(true);
-                                    setTimeout(() => setShowRoundIntro(false), 2000);
+                                    
+                                    if (!isTournament) {
+                                        setShowRoundIntro(true);
+                                        setTimeout(() => setShowRoundIntro(false), 2000);
+                                    }
+                                    
                                     setTimeLeft(QUESTION_TIME);
                                     setIsConfirmed(false);
                                     setSelectedAnswer(null);
@@ -732,8 +869,11 @@ const GamePlayView = () => {
             // Snappier transition to playing state
             timer = setTimeout(() => {
                 setGameStage('playing');
-                setShowRoundIntro(true);
-                setTimeout(() => setShowRoundIntro(false), 2000);
+                // Skip round intro for tournament mode
+                if (!isTournament) {
+                    setShowRoundIntro(true);
+                    setTimeout(() => setShowRoundIntro(false), 2000);
+                }
             }, 500);
         }
         return () => {
@@ -742,7 +882,7 @@ const GamePlayView = () => {
                 else clearTimeout(timer as any);
             }
         };
-    }, [gameStage, isLoadingQuestions]);
+    }, [gameStage, isLoadingQuestions, isTournament]);
 
     useEffect(() => {
         // TIMER DECOUPLING: Timer keeps ticking even after confirmation
@@ -771,6 +911,21 @@ const GamePlayView = () => {
     }, []);
 
 
+    // --- TOURNAMENT COUNTDOWN ---
+    useEffect(() => {
+        let timer: ReturnType<typeof setTimeout>;
+        if (showTournamentIntro && tournamentCountdown > 0) {
+            timer = setTimeout(() => setTournamentCountdown(prev => prev - 1), 1000);
+        } else if (showTournamentIntro && tournamentCountdown === 0) {
+            timer = setTimeout(() => {
+                setShowTournamentIntro(false);
+                setGameStage('playing');
+                // Trigger first question simulation?
+            }, 1000);
+        }
+        return () => clearTimeout(timer);
+    }, [showTournamentIntro, tournamentCountdown, isTournament]);
+
     if (fetchError || (!isLoadingQuestions && questions.length === 0)) {
         return (
             <div className="h-screen bg-neutral-950 flex flex-col items-center justify-center gap-6 p-4">
@@ -796,50 +951,99 @@ const GamePlayView = () => {
             <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-blue-600/10 blur-[120px] pointer-events-none"></div>
             <div className="absolute bottom-0 right-1/4 w-[500px] h-[500px] bg-fuchsia-600/10 blur-[120px] pointer-events-none"></div>
 
-            {/* --- TOP HUD --- */}
-            <div className="flex justify-between items-start mb-8 relative z-10 w-full max-w-7xl mx-auto">
-                {/* Left: Player (You) */}
-                <div className="flex items-center gap-4 md:gap-6 group">
-                    <div className="relative">
-                        {/* Avatar Container */}
-                        <div className="w-16 h-16 md:w-20 md:h-20 bg-neutral-900 border-2 border-blue-500/30 p-1 relative overflow-hidden transition-all duration-300 group-hover:border-blue-500/60"
-                             style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
-                            <img src={profile?.avatar_url || "https://api.dicebear.com/7.x/avataaars/svg?seed=fallback"} className="w-full h-full object-cover" alt="Me" />
-                            <div className="absolute inset-0 border border-blue-500/50 pointer-events-none mix-blend-overlay"></div>
-                        </div>
-                        {/* Rank Badge */}
-                        <div className="absolute -bottom-2 -right-2 transform scale-75 md:scale-90 z-20">
-                            <div className="w-8 h-8 bg-black border border-blue-500 flex items-center justify-center rotate-45 shadow-lg">
-                                <Shield size={14} className="text-blue-500 -rotate-45" />
+            {/* --- TOP HUD (Tournament Adapted) --- */}
+            <div className="flex justify-between items-center mb-8 relative z-10 w-full max-w-7xl mx-auto">
+                {/* Left: My Clan Team (5 Members Horizontal) */}
+                {isTournament ? (
+                    <div className="flex flex-col gap-3">
+                        {/* Clan Info */}
+                        <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 bg-neutral-900 border border-blue-500/30 overflow-hidden">
+                                <img src={myClanData?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan1"} className="w-full h-full object-cover" alt="Clan Icon" />
+                            </div>
+                            <div className="flex flex-col">
+                                <span className="text-sm font-black uppercase text-blue-400 tracking-wider">MY CLAN</span>
+                                <span className="text-xs font-bold text-gray-400">Score: {userScore + myClanMembers.reduce((acc, m) => acc + m.score, 0)}</span>
                             </div>
                         </div>
+                        
+                        {/* 5 Team Members Row */}
+                        <div className="flex items-center gap-2">
+                            {/* User (Me) */}
+                            <div className="relative group/member">
+                                <div className={`w-12 h-12 md:w-14 md:h-14 border-2 overflow-hidden transition-all duration-300 ${
+                                    isConfirmed 
+                                        ? (selectedAnswer === question?.correctAnswer ? 'border-green-500 ring-2 ring-green-500/50' : 'border-red-500 ring-2 ring-red-500/50')
+                                        : 'border-blue-500/50'
+                                }`}
+                                     style={{ clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
+                                    <img src={profile?.avatar_url || "https://api.dicebear.com/7.x/avataaars/svg?seed=me"} 
+                                         className="w-full h-full object-cover" alt="Me" />
+                                </div>
+                                <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-blue-600 rounded-full flex items-center justify-center text-[9px] text-white font-black border border-white/20">
+                                    {userScore}
+                                </div>
+                            </div>
+                            
+                            {/* 4 Teammates */}
+                            {myClanMembers.map((m, i) => (
+                                <div key={i} className="relative group/member">
+                                    <div className={`w-12 h-12 md:w-14 md:h-14 border-2 overflow-hidden transition-all duration-300 ${
+                                        m.isCorrect === true 
+                                            ? 'border-green-500 ring-2 ring-green-500/50' 
+                                            : m.isCorrect === false 
+                                            ? 'border-red-500 ring-2 ring-red-500/50' 
+                                            : 'border-blue-500/30'
+                                    }`}
+                                         style={{ clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
+                                        <img src={m.avatar || "https://api.dicebear.com/7.x/avataaars/svg?seed=teammate"} 
+                                             className={`w-full h-full object-cover ${m.isCorrect === null ? 'grayscale' : ''}`} alt={m.name} />
+                                    </div>
+                                    <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-neutral-900 rounded-full flex items-center justify-center text-[9px] text-white font-black border border-white/20">
+                                        {m.score}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     </div>
-                    
-                    <div className="hidden md:flex flex-col">
-                         <div className="flex items-center gap-2 mb-1">
-                             <span className="text-lg font-black uppercase tracking-wider text-white truncate max-w-[150px]">{profile?.display_name || "BẠN"}</span>
-                             {setScores.user > setScores.opponent && <Zap size={14} className="text-yellow-400 fill-yellow-400 animate-pulse" />}
-                         </div>
-                         
-                         {/* Health/Score Bars */}
-                         <div className="flex flex-col gap-1.5 w-32 md:w-48">
-                             {/* Round Wins */}
-                             <div className="flex gap-1 h-2">
-                                {Array.from({ length: winsNeeded }).map((_, i) => (
-                                    <div key={i} className={`flex-1 transform -skew-x-12 transition-all duration-500 ${i < setScores.user ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.6)]' : 'bg-white/10'}`} />
-                                ))}
+                ) : (
+                    // Standard 1v1 Layout for non-tournament
+                    <div className="flex items-center gap-4 md:gap-6 group">
+                        <div className="relative">
+                            <div className="w-16 h-16 md:w-20 md:h-20 bg-neutral-900 border-2 border-blue-500/30 p-1 relative overflow-hidden transition-all duration-300 group-hover:border-blue-500/60"
+                                 style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
+                                <img src={profile?.avatar_url || "https://api.dicebear.com/7.x/avataaars/svg?seed=fallback"} className="w-full h-full object-cover" alt="Me" />
+                                <div className="absolute inset-0 border border-blue-500/50 pointer-events-none mix-blend-overlay"></div>
+                            </div>
+                            <div className="absolute -bottom-2 -right-2 transform scale-75 md:scale-90 z-20">
+                                <div className="w-8 h-8 bg-black border border-blue-500 flex items-center justify-center rotate-45 shadow-lg">
+                                    <Shield size={14} className="text-blue-500 -rotate-45" />
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div className="hidden md:flex flex-col">
+                             <div className="flex items-center gap-2 mb-1">
+                                 <span className="text-lg font-black uppercase tracking-wider text-white truncate max-w-[150px]">{profile?.display_name || "BẠN"}</span>
+                                 {setScores.user > setScores.opponent && <Zap size={14} className="text-yellow-400 fill-yellow-400 animate-pulse" />}
                              </div>
-                             {/* Current Points */}
-                             <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-blue-400">
-                                 <span>Score: {userScore}</span>
+                             <div className="flex flex-col gap-1.5 w-32 md:w-48">
+                                 <div className="flex gap-1 h-2">
+                                    {Array.from({ length: winsNeeded }).map((_, i) => (
+                                        <div key={i} className={`flex-1 transform -skew-x-12 transition-all duration-500 ${i < setScores.user ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.6)]' : 'bg-white/10'}`} />
+                                    ))}
+                                 </div>
+                                 <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-blue-400">
+                                     <span>Score: {userScore}</span>
+                                 </div>
                              </div>
-                         </div>
+                        </div>
                     </div>
-                </div>
+                )}
 
                 {/* Center: Timer */}
                 <div className="absolute left-1/2 -translate-x-1/2 top-0 flex flex-col items-center z-20">
-                    <div className="relative mb-4">
+                     <div className="relative mb-4">
                         <div className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-500 mb-2 text-center whitespace-nowrap">
                              Hiệp {currentRound} <span className="text-white/20 mx-2">|</span> Câu {questionNumberInRound}/{questionsPerRound}
                         </div>
@@ -869,64 +1073,82 @@ const GamePlayView = () => {
                             </div>
                         </div>
                     </div>
-                    
-
                 </div>
 
-                {/* Right: Opponent */}
-                <div className="flex items-center gap-4 md:gap-6 group text-right">
-                    <div className="hidden md:flex flex-col items-end">
-                         <div className="flex items-center gap-2 mb-1 justify-end">
-                             {setScores.opponent > setScores.user && <Zap size={14} className="text-yellow-400 fill-yellow-400 animate-pulse" />}
-                             <span className="text-lg font-black uppercase tracking-wider text-white truncate max-w-[150px]">{opponent?.display_name || "ĐỐI THỦ"}</span>
-                         </div>
-                         
-                         {/* Health/Score Bars */}
-                         <div className="flex flex-col gap-1.5 w-32 md:w-48 items-end">
-                             {/* Round Wins */}
-                             <div className="flex gap-1 h-2 w-full justify-end">
-                                {Array.from({ length: winsNeeded }).map((_, i) => (
-                                    <div key={i} className={`flex-1 transform skew-x-12 transition-all duration-500 ${i < setScores.opponent ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.6)]' : 'bg-white/10'}`} />
-                                ))}
-                             </div>
-                             {/* Current Points */}
-                             <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-red-400 w-full">
-                                 <span>Score: {opponentScore}</span>
-                             </div>
-                         </div>
-                    </div>
-
-                    <div className="relative">
-                        {/* Avatar Container */}
-                        <div className="w-16 h-16 md:w-20 md:h-20 bg-neutral-900 border-2 border-red-500/30 p-1 relative overflow-hidden transition-all duration-300 group-hover:border-red-500/60"
-                             style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
-                            <img 
-                                src={opponent?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${opponent?.id || 'opponent'}`} 
-                                className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-500" 
-                                alt="Opponent" 
-                            />
-                            <div className="absolute inset-0 border border-red-500/50 pointer-events-none mix-blend-overlay"></div>
-                        </div>
-                        {/* Rank Badge */}
-                        <div className="absolute -bottom-2 -left-2 transform scale-75 md:scale-90 z-20">
-                            <div className="w-8 h-8 bg-black border border-red-500 flex items-center justify-center rotate-45 shadow-lg">
-                                <Zap size={14} className="text-red-500 -rotate-45" />
+                {/* Right: Opponent Clan */}
+                {isTournament ? (
+                    <div className="flex flex-col gap-3 items-end">
+                        {/* Clan Info */}
+                        <div className="flex items-center gap-2">
+                            <div className="flex flex-col items-end">
+                                <span className="text-sm font-black uppercase text-red-400 tracking-wider">OPP CLAN</span>
+                                <span className="text-xs font-bold text-gray-400">Score: {opponentClanMembers.reduce((acc, m) => acc + m.score, 0)}</span>
+                            </div>
+                            <div className="w-8 h-8 bg-neutral-900 border border-red-500/30 overflow-hidden">
+                                <img src={oppClanData?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan2"} className="w-full h-full object-cover" alt="Opp Clan Icon" />
                             </div>
                         </div>
+                        
+                        {/* 5 Opponent Members Row */}
+                        <div className="flex items-center gap-2">
+                            {opponentClanMembers.map((m, i) => (
+                                <div key={i} className="relative group/member">
+                                    <div className={`w-12 h-12 md:w-14 md:h-14 border-2 overflow-hidden transition-all duration-300 ${
+                                        m.isCorrect === true 
+                                            ? 'border-red-500 ring-2 ring-red-500/50' 
+                                            : m.isCorrect === false 
+                                            ? 'border-gray-600 ring-2 ring-gray-600/50' 
+                                            : 'border-red-500/30'
+                                    }`}
+                                         style={{ clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
+                                        <img src={m.avatar || "https://api.dicebear.com/7.x/avataaars/svg?seed=opponent"} 
+                                             className={`w-full h-full object-cover ${m.isCorrect === null ? 'grayscale' : ''}`} alt={m.name} />
+                                    </div>
+                                    <div className="absolute -bottom-1 -left-1 w-4 h-4 bg-neutral-900 rounded-full flex items-center justify-center text-[9px] text-white font-black border border-white/20">
+                                        {m.score}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                ) : (
+                    // Standard 1v1 Layout for non-tournament
+                    <div className="flex items-center gap-4 md:gap-6 group text-right">
+                        <div className="hidden md:flex flex-col items-end">
+                             <div className="flex items-center gap-2 mb-1 justify-end">
+                                 {setScores.opponent > setScores.user && <Zap size={14} className="text-yellow-400 fill-yellow-400 animate-pulse" />}
+                                 <span className="text-lg font-black uppercase tracking-wider text-white truncate max-w-[150px]">{opponent?.display_name || "ĐỐI THỦ"}</span>
+                             </div>
+                             <div className="flex flex-col gap-1.5 w-32 md:w-48 items-end">
+                                 <div className="flex gap-1 h-2 w-full justify-end">
+                                    {Array.from({ length: winsNeeded }).map((_, i) => (
+                                        <div key={i} className={`flex-1 transform skew-x-12 transition-all duration-500 ${i < setScores.opponent ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.6)]' : 'bg-white/10'}`} />
+                                    ))}
+                                 </div>
+                                 <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-red-400 w-full">
+                                     <span>Score: {opponentScore}</span>
+                                 </div>
+                             </div>
+                        </div>
 
-                         {/* Status Badge (Relocated) */}
-                         {(isConfirmed || opponentAnswered) && (
-                            <div className="absolute top-[110%] right-0 whitespace-nowrap z-30">
-                                <div className="px-3 py-1 bg-black/90 border border-red-500/30 backdrop-blur-md rounded-full flex items-center gap-2 animate-fade-in shadow-xl">
-                                    {!(isConfirmed && opponentAnswered) && <Loader2 size={10} className="text-red-500 animate-spin" />}
-                                    <span className="text-[8px] font-bold uppercase tracking-wider text-gray-300">
-                                        {isConfirmed && opponentAnswered ? 'Waiting Next...' : isConfirmed ? 'Đang đợi...' : 'Đã trả lời!'}
-                                    </span>
+                        <div className="relative">
+                            <div className="w-16 h-16 md:w-20 md:h-20 bg-neutral-900 border-2 border-red-500/30 p-1 relative overflow-hidden transition-all duration-300 group-hover:border-red-500/60"
+                                 style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
+                                <img 
+                                    src={opponent?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${opponent?.id || 'opponent'}`} 
+                                    className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-500" 
+                                    alt="Opponent" 
+                                />
+                                <div className="absolute inset-0 border border-red-500/50 pointer-events-none mix-blend-overlay"></div>
+                            </div>
+                            <div className="absolute -bottom-2 -left-2 transform scale-75 md:scale-90 z-20">
+                                <div className="w-8 h-8 bg-black border border-red-500 flex items-center justify-center rotate-45 shadow-lg">
+                                    <Zap size={14} className="text-red-500 -rotate-45" />
                                 </div>
                             </div>
-                        )}
+                        </div>
                     </div>
-                </div>
+                )}
             </div>
 
             {/* --- UTILITY BUTTONS (Top Right corner absolute) --- */}
@@ -1185,52 +1407,130 @@ const GamePlayView = () => {
                         </div>
 
                         <div className="relative w-full max-w-7xl flex flex-col md:flex-row items-center justify-between gap-12 md:gap-0 z-10">
-                             {/* Player 1 Stats */}
-                             <div className="flex flex-col items-center gap-4 animate-in slide-in-from-left-20 duration-700">
-                                 <div className="relative">
-                                      <div className={`w-32 h-32 md:w-52 md:h-52 bg-neutral-900 border-4 ${roundPoints.user > 0 ? 'border-green-500 shadow-[0_0_50px_rgba(34,197,94,0.3)]' : 'border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.3)]'} overflow-hidden grayscale-[0.5]`}
-                                           style={{ clipPath: 'polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px)' }}>
-                                          <img src={profile?.avatar_url || "https://api.dicebear.com/7.x/avataaars/svg?seed=fallback"} className="w-full h-full object-cover" alt="Me" />
-                                      </div>
-                                      <div className={`absolute -top-6 -right-6 w-16 h-16 md:w-20 md:h-20 flex items-center justify-center bg-black border-2 rounded-full text-2xl md:text-3xl font-black ${roundPoints.user > 0 ? 'border-green-500 text-green-500' : 'border-red-500 text-red-500'} shadow-xl z-20`}>
-                                          {roundPoints.user > 0 ? `+${roundPoints.user}` : roundPoints.user}
-                                      </div>
-                                 </div>
-                                 <div className="text-xl md:text-2xl font-black text-white uppercase tracking-wider">{profile?.display_name || "BẠN"}</div>
-                             </div>
-
-                            {/* Center Status */}
-                             <div className="flex flex-col items-center gap-4 text-center my-8 md:my-0">
-                                 <div className="px-4 py-1 bg-white/10 rounded-full border border-white/10 text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">Status Update</div>
-                                 <div className="text-4xl md:text-6xl font-black text-white italic tracking-tighter uppercase">
-                                     {isEndOfRound ? (
-                                         <>
-                                            <span className="text-red-500">ROUND {currentRound}</span>
-                                            <br />COMPLETE
-                                         </>
-                                     ) : 'NEXT QUESTION'}
-                                 </div>
-                                 {isEndOfRound && currentRound < maxRounds && (
-                                     <div className="mt-4 px-8 py-3 bg-red-600 text-white font-black uppercase tracking-widest shadow-[0_0_30px_rgba(239,68,68,0.4)] animate-pulse"
-                                          style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
-                                         Loading Round {currentRound + 1}...
+                             {isTournament ? (
+                                 <>
+                                     {/* My Clan Team - 5 Members */}
+                                     <div className="flex flex-col items-center gap-4 animate-in slide-in-from-left-20 duration-700">
+                                         <div className="text-xl font-black text-blue-400 uppercase tracking-wider mb-2">{myClanData?.name || "MY CLAN"}</div>
+                                         <div className="flex items-center gap-3">
+                                             {/* User (Me) */}
+                                             <div className="flex flex-col items-center gap-2">
+                                                 <div className={`w-16 h-16 md:w-20 md:h-20 border-2 overflow-hidden ${roundPoints.user > 0 ? 'border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.3)]' : 'border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.3)]'}`}
+                                                      style={{ clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
+                                                     <img src={profile?.avatar_url || "https://api.dicebear.com/7.x/avataaars/svg?seed=me"} 
+                                                          className="w-full h-full object-cover" alt="Me" />
+                                                 </div>
+                                                 <div className={`px-2 py-0.5 text-xs font-black ${roundPoints.user > 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                                     {roundPoints.user > 0 ? `+${roundPoints.user}` : roundPoints.user}
+                                                 </div>
+                                             </div>
+                                             
+                                             {/* 4 Teammates */}
+                                             {myClanMembers.map((m, i) => (
+                                                 <div key={i} className="flex flex-col items-center gap-2">
+                                                     <div className={`w-16 h-16 md:w-20 md:h-20 border-2 overflow-hidden ${m.isCorrect === true ? 'border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.3)]' : m.isCorrect === false ? 'border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.3)]' : 'border-gray-600'}`}
+                                                          style={{ clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
+                                                         <img src={m.avatar || "https://api.dicebear.com/7.x/avataaars/svg?seed=teammate"} 
+                                                              className="w-full h-full object-cover" alt={m.name} />
+                                                     </div>
+                                                     <div className={`px-2 py-0.5 text-xs font-black ${m.isCorrect === true ? 'text-green-500' : m.isCorrect === false ? 'text-red-500' : 'text-gray-500'}`}>
+                                                         {m.isCorrect === true ? '+10' : m.isCorrect === false ? '0' : '-'}
+                                                     </div>
+                                                 </div>
+                                             ))}
+                                         </div>
+                                         <div className="text-sm font-bold text-white">Total: {userScore + myClanMembers.reduce((acc, m) => acc + m.score, 0)}</div>
                                      </div>
-                                 )}
-                             </div>
 
-                             {/* Player 2 Stats */}
-                             <div className="flex flex-col items-center gap-4 animate-in slide-in-from-right-20 duration-700">
-                                 <div className="relative">
-                                      <div className={`w-32 h-32 md:w-52 md:h-52 bg-neutral-900 border-4 ${roundPoints.opponent > 0 ? 'border-green-500 shadow-[0_0_50px_rgba(34,197,94,0.3)]' : 'border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.3)]'} overflow-hidden grayscale-[0.5]`}
-                                           style={{ clipPath: 'polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px)' }}>
-                                          <img src={opponent?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${opponent?.id || 'opponent'}`} className="w-full h-full object-cover" alt="Opponent" />
-                                      </div>
-                                      <div className={`absolute -top-6 -left-6 w-16 h-16 md:w-20 md:h-20 flex items-center justify-center bg-black border-2 rounded-full text-2xl md:text-3xl font-black ${roundPoints.opponent > 0 ? 'border-green-500 text-green-500' : 'border-red-500 text-red-500'} shadow-xl z-20`}>
-                                          {roundPoints.opponent > 0 ? `+${roundPoints.opponent}` : roundPoints.opponent}
-                                      </div>
-                                 </div>
-                                 <div className="text-xl md:text-2xl font-black text-white uppercase tracking-wider">{opponent?.display_name || "ĐỐI THỦ"}</div>
-                             </div>
+                                     {/* Center Status */}
+                                     <div className="flex flex-col items-center gap-4 text-center my-8 md:my-0">
+                                         <div className="px-4 py-1 bg-white/10 rounded-full border border-white/10 text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">Status Update</div>
+                                         <div className="text-4xl md:text-6xl font-black text-white italic tracking-tighter uppercase">
+                                             {isEndOfRound ? (
+                                                 <>
+                                                    <span className="text-red-500">ROUND {currentRound}</span>
+                                                    <br />COMPLETE
+                                                 </>
+                                             ) : 'NEXT QUESTION'}
+                                         </div>
+                                         {isEndOfRound && currentRound < maxRounds && (
+                                             <div className="mt-4 px-8 py-3 bg-red-600 text-white font-black uppercase tracking-widest shadow-[0_0_30px_rgba(239,68,68,0.4)] animate-pulse"
+                                                  style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
+                                                 Loading Round {currentRound + 1}...
+                                             </div>
+                                         )}
+                                     </div>
+
+                                     {/* Opponent Clan Team - 5 Members */}
+                                     <div className="flex flex-col items-center gap-4 animate-in slide-in-from-right-20 duration-700">
+                                         <div className="text-xl font-black text-red-400 uppercase tracking-wider mb-2">{oppClanData?.name || "OPP CLAN"}</div>
+                                         <div className="flex items-center gap-3">
+                                             {opponentClanMembers.map((m, i) => (
+                                                 <div key={i} className="flex flex-col items-center gap-2">
+                                                     <div className={`w-16 h-16 md:w-20 md:h-20 border-2 overflow-hidden ${m.isCorrect === true ? 'border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.3)]' : m.isCorrect === false ? 'border-gray-600 shadow-[0_0_20px_rgba(107,114,128,0.3)]' : 'border-gray-600'}`}
+                                                          style={{ clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
+                                                         <img src={m.avatar || "https://api.dicebear.com/7.x/avataaars/svg?seed=opponent"} 
+                                                              className="w-full h-full object-cover" alt={m.name} />
+                                                     </div>
+                                                     <div className={`px-2 py-0.5 text-xs font-black ${m.isCorrect === true ? 'text-red-500' : m.isCorrect === false ? 'text-gray-500' : 'text-gray-500'}`}>
+                                                         {m.isCorrect === true ? '+10' : m.isCorrect === false ? '0' : '-'}
+                                                     </div>
+                                                 </div>
+                                             ))}
+                                         </div>
+                                         <div className="text-sm font-bold text-white">Total: {opponentClanMembers.reduce((acc, m) => acc + m.score, 0)}</div>
+                                     </div>
+                                 </>
+                             ) : (
+                                 <>
+                                     {/* Player 1 Stats */}
+                                     <div className="flex flex-col items-center gap-4 animate-in slide-in-from-left-20 duration-700">
+                                         <div className="relative">
+                                              <div className={`w-32 h-32 md:w-52 md:h-52 bg-neutral-900 border-4 ${roundPoints.user > 0 ? 'border-green-500 shadow-[0_0_50px_rgba(34,197,94,0.3)]' : 'border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.3)]'} overflow-hidden grayscale-[0.5]`}
+                                                   style={{ clipPath: 'polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px)' }}>
+                                                  <img src={profile?.avatar_url || "https://api.dicebear.com/7.x/avataaars/svg?seed=fallback"} className="w-full h-full object-cover" alt="Me" />
+                                              </div>
+                                              <div className={`absolute -top-6 -right-6 w-16 h-16 md:w-20 md:h-20 flex items-center justify-center bg-black border-2 rounded-full text-2xl md:text-3xl font-black ${roundPoints.user > 0 ? 'border-green-500 text-green-500' : 'border-red-500 text-red-500'} shadow-xl z-20`}>
+                                                  {roundPoints.user > 0 ? `+${roundPoints.user}` : roundPoints.user}
+                                              </div>
+                                         </div>
+                                         <div className="text-xl md:text-2xl font-black text-white uppercase tracking-wider">{profile?.display_name || "BẠN"}</div>
+                                     </div>
+
+                                    {/* Center Status */}
+                                     <div className="flex flex-col items-center gap-4 text-center my-8 md:my-0">
+                                         <div className="px-4 py-1 bg-white/10 rounded-full border border-white/10 text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">Status Update</div>
+                                         <div className="text-4xl md:text-6xl font-black text-white italic tracking-tighter uppercase">
+                                             {isEndOfRound ? (
+                                                 <>
+                                                    <span className="text-red-500">ROUND {currentRound}</span>
+                                                    <br />COMPLETE
+                                                 </>
+                                             ) : 'NEXT QUESTION'}
+                                         </div>
+                                         {isEndOfRound && currentRound < maxRounds && (
+                                             <div className="mt-4 px-8 py-3 bg-red-600 text-white font-black uppercase tracking-widest shadow-[0_0_30px_rgba(239,68,68,0.4)] animate-pulse"
+                                                  style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
+                                                 Loading Round {currentRound + 1}...
+                                             </div>
+                                         )}
+                                     </div>
+
+                                     {/* Player 2 Stats */}
+                                     <div className="flex flex-col items-center gap-4 animate-in slide-in-from-right-20 duration-700">
+                                         <div className="relative">
+                                              <div className={`w-32 h-32 md:w-52 md:h-52 bg-neutral-900 border-4 ${roundPoints.opponent > 0 ? 'border-green-500 shadow-[0_0_50px_rgba(34,197,94,0.3)]' : 'border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.3)]'} overflow-hidden grayscale-[0.5]`}
+                                                   style={{ clipPath: 'polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px)' }}>
+                                                  <img src={opponent?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${opponent?.id || 'opponent'}`} className="w-full h-full object-cover" alt="Opponent" />
+                                              </div>
+                                              <div className={`absolute -top-6 -left-6 w-16 h-16 md:w-20 md:h-20 flex items-center justify-center bg-black border-2 rounded-full text-2xl md:text-3xl font-black ${roundPoints.opponent > 0 ? 'border-green-500 text-green-500' : 'border-red-500 text-red-500'} shadow-xl z-20`}>
+                                                  {roundPoints.opponent > 0 ? `+${roundPoints.opponent}` : roundPoints.opponent}
+                                              </div>
+                                         </div>
+                                         <div className="text-xl md:text-2xl font-black text-white uppercase tracking-wider">{opponent?.display_name || "ĐỐI THỦ"}</div>
+                                     </div>
+                                 </>
+                             )}
                         </div>
                     </div>
                 </div>
@@ -1453,14 +1753,96 @@ const GamePlayView = () => {
                 <div className="fixed inset-0 z-[110] bg-black flex items-center justify-center animate-in fade-in duration-700">
                     <div className="text-center animate-in zoom-in-150 duration-700">
                          <h1 className="text-6xl md:text-9xl font-black text-white uppercase tracking-widest italic leading-none mb-4">TRẬN ĐẤU<br/>KẾT THÚC</h1>
-                         <div className="flex justify-center gap-2">
-                             <div className="w-3 h-3 bg-red-500 animate-bounce delay-0"></div>
-                             <div className="w-3 h-3 bg-red-500 animate-bounce delay-150"></div>
-                             <div className="w-3 h-3 bg-red-500 animate-bounce delay-300"></div>
-                         </div>
                     </div>
                 </div>
             )}
+
+            {/* --- TOURNAMENT INTRO OVERLAY --- */}
+            {showTournamentIntro && (
+                <div className="fixed inset-0 z-[200] bg-black flex flex-col items-center justify-center font-sans">
+                     <div className="absolute inset-0 bg-neutral-900">
+                         {/* Background Effects */}
+                         <div className="absolute inset-0 bg-grid-pattern opacity-10"></div>
+                         <div className="absolute top-0 left-0 w-full h-[500px] bg-gradient-to-b from-fuchsia-900/20 to-transparent"></div>
+                         <div className="absolute bottom-0 left-0 w-full h-[500px] bg-gradient-to-t from-blue-900/20 to-transparent"></div>
+                     </div>
+
+                     <div className="relative z-10 w-full max-w-7xl flex flex-col items-center gap-12">
+                         {/* Header */}
+                         <div className="text-center space-y-2">
+                             <div className="px-6 py-2 bg-white/5 border border-white/10 rounded-full inline-flex items-center gap-2 backdrop-blur-md">
+                                 <Trophy size={16} className="text-yellow-500" />
+                                 <span className="text-xs font-black uppercase tracking-[0.3em] text-white">Tournament Match</span>
+                             </div>
+                             <h1 className="text-4xl md:text-6xl font-black text-white uppercase italic tracking-tighter">
+                                 Team Battle <span className="text-fuchsia-500">5 vs 5</span>
+                             </h1>
+                         </div>
+
+                         {/* VS Area */}
+                         <div className="flex items-center justify-center gap-12 md:gap-24 w-full">
+                             {/* My Team - 5 Members Horizontal */}
+                             <div className="flex flex-col items-center gap-6 animate-in slide-in-from-left-20 duration-700">
+                                 <div className="text-2xl font-black text-blue-400 uppercase tracking-wider">MY CLAN</div>
+                                 <div className="flex items-center gap-3">
+                                     {/* User (Me) */}
+                                     <div className="relative">
+                                         <div className="w-16 h-16 md:w-20 md:h-20 border-2 border-blue-500 shadow-[0_0_30px_rgba(59,130,246,0.3)] overflow-hidden"
+                                              style={{ clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
+                                             <img src={profile?.avatar_url || "https://api.dicebear.com/7.x/avataaars/svg?seed=me"} 
+                                                  className="w-full h-full object-cover" alt="Me" />
+                                         </div>
+                                         <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-blue-600 text-white text-[10px] font-black uppercase whitespace-nowrap">
+                                             YOU
+                                         </div>
+                                     </div>
+                                     
+                                     {/* 4 Teammates */}
+                                     {myClanMembers.slice(0, 4).map((m, i) => (
+                                         <div key={i} className="relative">
+                                             <div className="w-16 h-16 md:w-20 md:h-20 border-2 border-blue-500/50 overflow-hidden"
+                                                  style={{ clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
+                                                 <img src={m.avatar || "https://api.dicebear.com/7.x/avataaars/svg?seed=teammate"} 
+                                                      className="w-full h-full object-cover" alt={m.name} />
+                                             </div>
+                                         </div>
+                                     ))}
+                                 </div>
+                             </div>
+
+                             {/* Countdown */}
+                             <div className="w-40 h-40 flex items-center justify-center relative">
+                                 {tournamentCountdown > 0 ? (
+                                     <span className="text-9xl font-black text-white italic tracking-tighter animate-ping duration-1000 absolute">
+                                         {tournamentCountdown}
+                                     </span>
+                                 ) : (
+                                     <span className="text-6xl font-black text-fuchsia-500 italic tracking-tighter animate-ping">
+                                         FIGHT!
+                                     </span>
+                                 )}
+                             </div>
+
+                             {/* Opponent Team - 5 Members Horizontal */}
+                             <div className="flex flex-col items-center gap-6 animate-in slide-in-from-right-20 duration-700">
+                                 <div className="text-2xl font-black text-red-400 uppercase tracking-wider">OPP CLAN</div>
+                                 <div className="flex items-center gap-3">
+                                     {opponentClanMembers.slice(0, 5).map((m, i) => (
+                                         <div key={i} className="relative">
+                                             <div className="w-16 h-16 md:w-20 md:h-20 border-2 border-red-500/50 overflow-hidden"
+                                                  style={{ clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
+                                                 <img src={m.avatar || "https://api.dicebear.com/7.x/avataaars/svg?seed=opponent"} 
+                                                      className="w-full h-full object-cover" alt={m.name} />
+                                             </div>
+                                         </div>
+                                     ))}
+                                 </div>
+                             </div>
+                         </div>
+                     </div>
+                </div>
+            )}
+
         </div>
     );
 };

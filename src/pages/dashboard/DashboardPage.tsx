@@ -18,7 +18,7 @@ import {
   Plus,
 } from "lucide-react";
 import Toast, { type ToastType } from "../../components/Toast";
-import MatchOverlay from "./components/MatchOverlay";
+
 import MatchMonitor from "./components/MatchMonitor";
 
 
@@ -45,9 +45,7 @@ const DashboardPage = () => {
   const userMenuRef = useRef<HTMLDivElement>(null);
   const mainContentRef = useRef<HTMLElement>(null);
 
-  // Match Overlay State
-  const [showMatchOverlay, setShowMatchOverlay] = useState(false);
-  const [matchOverlayData, setMatchOverlayData] = useState<any>(null);
+
 
   const location = useLocation();
 
@@ -62,6 +60,7 @@ const DashboardPage = () => {
 
 
     const getClanData = async (userId: string) => {
+      console.log('[DashboardPage] Fetching clan data for user:', userId);
       // 1. Check membership
       const { data: memberData, error: memberError } = await supabase
         .from('clan_members')
@@ -69,12 +68,16 @@ const DashboardPage = () => {
         .eq('user_id', userId);
 
       if (memberError) {
-        console.error("Error fetching clan members:", memberError);
+        console.error("[DashboardPage] Error fetching clan members:", memberError);
         return;
       }
 
+      console.log('[DashboardPage] Member data:', memberData);
+
       if (memberData && memberData.length > 0) {
         const approvedMember = memberData.find(m => m.status === 'approved');
+        console.log('[DashboardPage] Approved member:', approvedMember);
+        
         const statusMap: { [key: string]: 'pending' | 'member' } = {};
         
         memberData.forEach(m => {
@@ -97,7 +100,12 @@ const DashboardPage = () => {
                ...clanDetails,
                role: approvedMember.role
              };
+             console.log('[DashboardPage] Clan info loaded:', clanInfo);
+           } else {
+             console.error('[DashboardPage] Error fetching clan details:', clanError);
            }
+        } else {
+          console.log('[DashboardPage] No approved member found');
         }
 
         setDashboardCache(prev => ({
@@ -105,6 +113,8 @@ const DashboardPage = () => {
           userClanStatus: statusMap,
           clanInfo: clanInfo
         }));
+      } else {
+        console.log('[DashboardPage] No clan membership found');
       }
     };
 
@@ -204,22 +214,7 @@ const DashboardPage = () => {
       {/* Background Monitor for Tournament Matches */}
       <MatchMonitor 
         userClanId={dashboardCache?.clanInfo?.id}
-        isOpen={showMatchOverlay}
-        onMatchDetected={(data) => {
-          setMatchOverlayData(data);
-          setShowMatchOverlay(true);
-        }}
       />
-
-      {/* Full Screen Match Overlay */}
-      {matchOverlayData && (
-        <MatchOverlay 
-          key={matchOverlayData.matchId || 'current-match'}
-          isOpen={showMatchOverlay}
-          onClose={() => setShowMatchOverlay(false)}
-          {...matchOverlayData}
-        />
-      )}
 
       {/* Sidebar */}
       <aside className="w-20 md:w-64 bg-neutral-900 border-r border-white/5 flex flex-col z-50">
