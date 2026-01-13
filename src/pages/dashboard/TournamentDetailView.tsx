@@ -609,7 +609,7 @@ const TournamentDetailView = () => {
                        </div>
                     )}
                     <div className="overflow-x-auto pb-12 scrollbar-hide relative">
-                       <div className="flex px-8 py-20 w-max min-h-[900px] relative gap-20">
+                       <div className="flex px-8 py-20 w-max relative gap-20">
                           {Array.from({ length: Math.log2(Math.pow(2, Math.ceil(Math.log2(registrations.length || 16)))) }, (_, i) => i + 1).map((round) => {
                               const totalRounds = Math.log2(Math.pow(2, Math.ceil(Math.log2(registrations.length || 16))));
                               const roundMatches = matches.filter(m => m.round === round);
@@ -617,7 +617,7 @@ const TournamentDetailView = () => {
                               const currentGap = Math.pow(2, round - 1) * pitch - cardHeight;
                               const vLineHeight = (Math.pow(2, round - 1) * pitch) / 2;
                               return (
-                                 <div key={round} className="bracket-column" style={{ gap: `${currentGap}px` }}>
+                                 <div key={round} className="bracket-column" style={{ gap: `${currentGap}px`, justifyContent: 'flex-start', paddingTop: `${(Math.pow(2, round - 1) - 1) * (pitch / 2)}px` }}>
                                     <div className="text-center absolute top-[-40px] left-0 right-0 z-20"><div className="inline-block px-5 py-2 bg-neutral-950/80 backdrop-blur-md border border-white/10 rounded-full shadow-2xl"><span className="text-[10px] font-black text-fuchsia-500 uppercase tracking-[0.3em] glow-text">{round === totalRounds ? 'Chung kết' : round === totalRounds - 1 ? 'Bán kết' : round === totalRounds - 2 ? 'Tứ kết' : `Vòng ${round}`}</span></div></div>
                                     {roundMatches.map((match) => {
                                        const matchDate = new Date(match.scheduledTime); const matchTimeStr = matchDate.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
@@ -760,7 +760,7 @@ const TournamentDetailView = () => {
                            <div key={match.id} className={`p-5 bg-neutral-900 border ${isLive ? 'border-fuchsia-500 shadow-[0_0_20px_rgba(192,38,211,0.2)]' : 'border-white/5'} rounded-xl group transition-all hover:bg-neutral-800/80`}>
                              <div className="flex items-center justify-between mb-6">
                                <div className="flex items-center gap-3">
-                                 <div className="px-2.5 py-1 bg-fuchsia-500/10 border border-fuchsia-500/20 rounded-md">
+                                 <div className="px-2.5 py-1 bg-fuchsia-500/10 border border-fuchsia-500/20 rounded-">
                                     <span className="text-[10px] font-black text-fuchsia-500 uppercase tracking-widest">
                                       {match.round === totalRounds ? 'Chung kết' : match.round === totalRounds - 1 ? 'Bán kết' : `Vòng ${match.round}`}
                                     </span>

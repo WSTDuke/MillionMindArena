@@ -88,6 +88,7 @@ const GamePlayView = () => {
     const leaveRoomRef = useRef<(() => Promise<void>) | null>(null);
     const processedQuestionRef = useRef<number>(-1);
     const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const processedRoundRef = useRef<number>(0);
     const bufferedOpponentAnswers = useRef<Map<number, { isCorrect: boolean; points: number; currentScore?: number }>>(new Map());
     const currIndexRef = useRef<number>(0);
     const isConfirmedRef = useRef<boolean>(false);
@@ -780,6 +781,9 @@ const GamePlayView = () => {
                         setShowTransition(false);
 
                         if (isEndOfRound) {
+                            if (processedRoundRef.current === currentRound) return;
+                            processedRoundRef.current = currentRound;
+
                             // SAVE ROUND SCORES TO HISTORY
                             const currentRoundScores = { ...pointsRef.current };
                             setRoundScoresRecord(prev => [...prev, currentRoundScores]);
@@ -846,7 +850,7 @@ const GamePlayView = () => {
         }
 
         return () => {
-             // Logic intentionally kept outside status effects to prevent interruption
+             if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
         };
     }, [isConfirmed, opponentAnswered, timeLeft, showTransition, isGameOver, isLoadingQuestions, questions, currentQuestionIndex, isEndOfRound, setScores, winsNeeded, currentRound, maxRounds, QUESTION_TIME, selectedAnswer, showSetResults]);
 
@@ -854,7 +858,7 @@ const GamePlayView = () => {
         let timer: ReturnType<typeof setInterval> | ReturnType<typeof setTimeout>;
         if (gameStage === 'preparing') {
             // Only start counting down once everything is loaded
-            if (isLoadingQuestions) return;
+            if (isLoadingQuestions || isTournament) return;
 
             timer = setInterval(() => {
                 setIntroTimer(prev => {
@@ -1188,7 +1192,7 @@ const GamePlayView = () => {
 
                         <div className="inline-flex items-center gap-2 mb-6 opacity-60">
                             <span className="w-2 h-2 bg-fuchsia-500 rotate-45 animate-pulse"></span>
-                            <span className="text-xs font-black uppercase tracking-[0.3em] text-fuchsia-300">Question Protocol</span>
+                            <span className="text-xs font-black uppercase tracking-[0.3em] text-fuchsia-300">Câu hỏi</span>
                             <span className="w-2 h-2 bg-fuchsia-500 rotate-45 animate-pulse"></span>
                         </div>
 
@@ -1444,7 +1448,7 @@ const GamePlayView = () => {
 
                                      {/* Center Status */}
                                      <div className="flex flex-col items-center gap-4 text-center my-8 md:my-0">
-                                         <div className="px-4 py-1 bg-white/10 rounded-full border border-white/10 text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">Status Update</div>
+                                         <div className="px-4 py-1 bg-white/10 rounded-full border border-white/10 text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">Câu hỏi tiếp theo</div>
                                          <div className="text-4xl md:text-6xl font-black text-white italic tracking-tighter uppercase">
                                              {isEndOfRound ? (
                                                  <>
@@ -1456,7 +1460,7 @@ const GamePlayView = () => {
                                          {isEndOfRound && currentRound < maxRounds && (
                                              <div className="mt-4 px-8 py-3 bg-red-600 text-white font-black uppercase tracking-widest shadow-[0_0_30px_rgba(239,68,68,0.4)] animate-pulse"
                                                   style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
-                                                 Loading Round {currentRound + 1}...
+                                                 Chuẩn bị round {currentRound + 1}...
                                              </div>
                                          )}
                                      </div>
@@ -1511,7 +1515,7 @@ const GamePlayView = () => {
                                          {isEndOfRound && currentRound < maxRounds && (
                                              <div className="mt-4 px-8 py-3 bg-red-600 text-white font-black uppercase tracking-widest shadow-[0_0_30px_rgba(239,68,68,0.4)] animate-pulse"
                                                   style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
-                                                 Loading Round {currentRound + 1}...
+                                                 Chuẩn bị round {currentRound + 1}...
                                              </div>
                                          )}
                                      </div>
