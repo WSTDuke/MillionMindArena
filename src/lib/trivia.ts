@@ -16,12 +16,16 @@ export interface ProcessedQuestion {
     text: string;
     options: string[];
     correctAnswer: number;
+    category?: string;
+    explanation?: string;
+    note?: string;
 }
 
 interface RawQuestion {
     text: string;
     correct: string;
     incorrect: string[];
+    category?: string;
 }
 
 /**
@@ -49,32 +53,56 @@ let lastRequestTime = 0;
 const MIN_REQUEST_INTERVAL = 12000; // 12 seconds
 let geminiBroken = localStorage.getItem('gemini_broken') === 'true';
 
-/**
- * CẤU HÌNH PROMPT MỚI THÔNG MINH HƠN
- */
-const SYSTEM_PROMPT = `Bạn là một chuyên gia biên dịch câu đố (Trivia Master) thông thái.
-Nhiệm vụ: Bản địa hóa (Localize) dữ liệu câu hỏi từ tiếng Anh sang tiếng Việt.
+const SYSTEM_PROMPT = `Bạn là một chuyên gia Localization & Cultural Adaptation cao cấp. Nhiệm vụ của bạn là chuyển ngữ các bộ câu hỏi đố vui (Trivia) sang Tiếng Việt một cách chuyên nghiệp và tự nhiên.
 
-QUY TẮC DỊCH THUẬT (BẮT BUỘC):
+=== 1. QUY TẮC THỰC THỂ BẤT BIẾN (NON-TRANSLATABLES) ===
+Tuyệt đối giữ nguyên nguyên văn (không dịch nghĩa đen):
+- VĂN HÓA POP: Tên nghệ sĩ (2 Chainz, Future, Drake...), tên Album (Watch the Throne), tên bài hát (Febreze).
+- THẾ GIỚI GAME: Tên thành phố hư cấu (Steelport), tên nhân vật (Postal Dude), tên vật nuôi (Champ).
+- THƯƠNG HIỆU: Tên công ty (Supercell, Niantic), tên dòng xe (Dodge Copperhead).
+- QUỐC TẾ: Mã hiệu NATO (Tango, Alpha, Bravo), tên các nhóm đấu vật (Demolition).
 
-1. TÊN RIÊNG & THƯƠNG HIỆU (PROPER NOUNS):
-   - GIỮ NGUYÊN TIẾNG ANH: Tên các tác phẩm (Phim, Game, Nhạc), thương hiệu, nhân vật (VD: Breaking Bad, Doctor Who, Portal, Marvel).
-   - NGOẠI LỆ: Chỉ dịch khi tên đó đã CỰC KỲ PHỔ BIẾN tại Việt Nam (VD: "Back to the Future" -> "Trở lại tương lai", "The Lion King" -> "Vua Sư Tử").
-   - Tên người: Giữ nguyên (VD: Albert Einstein, George Washington).
+=== 2. QUY TẮC NGỮ CẢNH CHUYÊN BIỆT (CONTEXTUAL INTELLIGENCE) ===
+- KHOA HỌC: "Meter/Metre" -> "Mét", "Mercury" -> "Sao Thủy" (không phải Thủy ngân). "Venus" -> "Sao Kim", "Mars" -> "Sao Hỏa".
+- NHẠC LÝ: "Bridge" -> "Đoạn Bridge/Đoạn chuyển", "Chorus" -> "Điệp khúc".
+- CÔNG NGHỆ: "Mechanical Mouse" -> "Chuột bi" hoặc "Chuột cơ".
 
-2. DỊCH THEO NGỮ CẢNH CHUYÊN MÔN:
-   - KHÔNG dịch sát nghĩa từng chữ (Word-by-word).
-   - "Level" (trong game) -> dịch là "Màn chơi" (tránh dùng "Mức độ").
-   - "Franchise" -> dịch là "Thương hiệu" hoặc "Loạt phim/game".
-   - Sử dụng thuật ngữ phù hợp với giới trẻ và game thủ.
+=== 3. XỬ LÝ LỖI NHẬN DIỆN & TỪ LÓNG (ADVANCED HEURISTICS) ===
+- OCR Errors: Nếu gặp từ vô nghĩa (ví dụ: "Chuột sinh tố" do dịch sai từ Mechanical Mouse), hãy so sánh các đáp án còn lại để suy luận ngữ cảnh thực tế.
+- Phân biệt Slang & Literal: "Hot" trong thiên văn là "Nóng" (nhiệt độ), trong âm nhạc là "Nổi bật/Thịnh hành". "Sick" trong âm nhạc giữ nguyên nếu là tên bài hát/album, không dịch là "Ốm".
 
-3. CẤU TRÚC CÂU & VĂN PHONG QUYẾT ĐỊNH:
-   - Đưa từ để hỏi (Ai, Cái gì, Năm nào...) về vị trí tự nhiên trong ngữ pháp tiếng Việt.
-   - NHẤN MẠNH PHỦ ĐỊNH: Các từ phủ định trong câu hỏi PHẢI VIẾT HOA (VD: KHÔNG, KHÔNG PHẢI, NGOẠI TRỪ).
-   - Văn phong súc tích, chuyên nghiệp dành cho trắc nghiệm (Quiz).
+=== 4. QUY TẮC VỀ TÍNH CHÍNH XÁC (FACT-CHECKING) ===
+- Nếu phát hiện câu hỏi hoặc đáp án gốc bị sai kiến thức thực tế (ví dụ: Ghi "Thủy ngân" hoặc "Mercury" là nóng nhất - trong khi thực tế là Sao Kim), hãy ghi chú cảnh báo vào trường "note".
 
-4. OUTPUT FORMAT:
-   - CHỈ TRẢ VỀ MẢNG JSON. Không giải thích, không thêm text ngoài JSON.`;
+=== 5. QUY TẮC SUY LUẬN XÁC SUẤT (PROBABILISTIC REASONING) ===
+- Nếu 3 trong 4 đáp án là tên riêng tiếng Anh, giữ nguyên đáp án còn lại dù có nghĩa tiếng Việt (Ví dụ: A. Future, B. Drake, C. 2 Chainz, D. Common -> Không dịch "Common" thành "Phổ biến").
+- Nhận diện sự lỗi thời: Nếu câu hỏi nhắc đến các mốc thời gian cũ (1942) hoặc thuật ngữ "Mechanical", hãy dùng thuật ngữ retro/đồ cổ tương ứng.
+
+=== 6. VĂN PHONG ĐỐ VUI (TRIVIA TONE & STYLE) ===
+- Tính ngắn gọn: Đặc biệt ưu tiên súc tích phù hợp màn hình di động (VD: "Hành tinh nào thứ hai tính từ Mặt Trời?" thay vì "Hành tinh nào nằm ở vị trí thứ hai...").
+- Cấu trúc: Đặt từ để hỏi (Ai, Cái gì, Ở đâu, Khi nào) ở vị trí tự nhiên nhất trong tiếng Việt.
+
+=== 7. CẤU TRÚC ĐẦU RA (JSON FORMAT) ===
+Xuất kết quả là một MẢNG các đối tượng JSON:
+{
+  "category": "Lĩnh vực (Game/Nhạc/Khoa học...)",
+  "question": "Câu dịch tiếng Việt chuẩn",
+  "options": {
+    "A": "Đáp án A",
+    "B": "Đáp án B",
+    "C": "Đáp án C",
+    "D": "Đáp án D"
+  },
+  "correct": "Key của đáp án đúng (A/B/C/D)",
+  "note": "Ghi chú nếu phát hiện sai kiến thức hoặc lưu ý localization đặc biệt",
+  "explanation": "Giải thích ngắn gọn lý do dịch hoặc giữ nguyên thuật ngữ"
+}
+
+=== 8. VÍ DỤ MẪU ===
+- Input: "Hành tinh nào gần Mặt Trời nhất? Đáp án: Thủy ngân"
+- Output: { "category": "Khoa học", "question": "Hành tinh nào gần Mặt Trời nhất?", "options": {"A": "Sao Thủy", "B": "Sao Kim", "C": "Sao Hỏa", "D": "Sao Thổ"}, "correct": "A", "note": "Đã đổi Thủy ngân thành Sao Thủy.", "explanation": "Localization thuật ngữ thiên văn." }
+
+OUTPUT FORMAT: CHỈ TRẢ VỀ MẢNG JSON. Không giải thích thêm.`;
 
 
 
@@ -99,51 +127,79 @@ async function translateBatchWithGoogle(texts: string[]): Promise<string[]> {
     }
 }
 
+interface GeminiResponseItem {
+    id?: number;
+    category: string;
+    question: string;
+    options: Record<string, string>;
+    correct: string;
+    note?: string;
+    explanation?: string;
+}
+
 /**
- * Translates a batch of strings using Gemini AI for high quality.
+ * Translates a batch of RawQuestion objects using Gemini AI.
  */
-async function translateBatchWithGemini(texts: string[]): Promise<string[]> {
+async function translateBatchWithGemini(questions: RawQuestion[]): Promise<ProcessedQuestion[]> {
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY?.trim();
     if (!apiKey || geminiBroken || apiKey.length < 10) {
-        return translateBatchWithGoogle(texts);
+        throw new Error("Gemini API Key missing or broken");
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
     
     try {
-        const model = genAI.getGenerativeModel({ 
-            model: "gemini-1.5-flash",
-        }, { apiVersion: "v1" });
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }, { apiVersion: "v1" });
 
-        // Cập nhật cách truyền prompt để đảm bảo Gemini hiểu rõ ngữ cảnh mảng
-        const prompt = `${SYSTEM_PROMPT}\n\nINPUT DATA TO TRANSLATE:\n${JSON.stringify(texts)}`;
+        // Prepare input for Gemini
+        const inputData = questions.map((q, idx) => ({
+            id: idx,
+            category: q.category || "General",
+            question: q.text,
+            correct_answer: q.correct,
+            incorrect_answers: q.incorrect
+        }));
+
+        const prompt = `${SYSTEM_PROMPT}\n\nINPUT DATA TO LOCALIZE (JSON):\n${JSON.stringify(inputData)}`;
         
         const result = await model.generateContent(prompt);
         const response = await result.response;
         let text = response.text();
         
-        // Robust check: Remove markdown backticks if Gemini includes them
         if (text.includes("```")) {
             text = text.replace(/```json|```/g, "").trim();
         }
         
-        const translatedArray = JSON.parse(text);
+        const translatedArray = JSON.parse(text) as GeminiResponseItem[];
         
-        if (Array.isArray(translatedArray) && translatedArray.length === texts.length) {
-            return translatedArray;
+        if (Array.isArray(translatedArray)) {
+            return translatedArray.map((item, idx: number) => {
+                const opts = item.options;
+                const options = [opts.A, opts.B, opts.C, opts.D].filter(Boolean);
+                const correctKey = item.correct || "A";
+                const correctValue = opts[correctKey];
+                const correctIndex = options.indexOf(correctValue);
+
+                const capitalize = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+
+                return {
+                    text: item.question || questions[idx].text,
+                    options: options.map(capitalize),
+                    correctAnswer: correctIndex !== -1 ? correctIndex : 0,
+                    category: item.category,
+                    explanation: item.explanation,
+                    note: item.note
+                };
+            });
         }
-        throw new Error("Mismatched length");
+        throw new Error("Mismatched output format");
     } catch (error) {
-        // ... (Logic xử lý lỗi giữ nguyên)
         const msg = error instanceof Error ? error.message : String(error);
         if (msg.includes("404") || msg.includes("not found")) {
             geminiBroken = true;
             localStorage.setItem('gemini_broken', 'true');
-            console.warn("Gemini resource not found (likely API/Endpoint mismatch). Switching to Google Translate.");
-        } else {
-            console.error("Gemini Error, falling back to Google:", msg);
         }
-        return translateBatchWithGoogle(texts);
+        throw error;
     }
 }
 
@@ -284,7 +340,8 @@ export async function fetchQuestions(
                     return {
                         text: decodedQuestion,
                         correct: decodedCorrect,
-                        incorrect: decodedIncorrect
+                        incorrect: decodedIncorrect,
+                        category: q.category
                     };
                 });
 
@@ -294,49 +351,49 @@ export async function fetchQuestions(
                 try {
                     for (let i = 0; i < rawQuestions.length; i += 10) {
                         const batch = rawQuestions.slice(i, i + 10);
-                        const stringsToTranslate: string[] = [];
-                        batch.forEach((q: RawQuestion) => {
-                            stringsToTranslate.push(q.text, q.correct, ...q.incorrect);
-                        });
-
-                        const translatedStrings = await translateBatchWithGemini(stringsToTranslate);
                         
-                        let stringIdx = 0;
-                        batch.forEach((q: RawQuestion) => {
-                            const text = translatedStrings[stringIdx++] || q.text;
-                            const correct = translatedStrings[stringIdx++] || q.correct;
-                            const incorrect = [
-                                translatedStrings[stringIdx++] || q.incorrect[0],
-                                translatedStrings[stringIdx++] || q.incorrect[1],
-                                translatedStrings[stringIdx++] || q.incorrect[2]
-                            ];
-
-                            const options = [...incorrect];
-                            const randomIndex = Math.floor(Math.random() * (options.length + 1));
-                            options.splice(randomIndex, 0, correct);
-
-                            const capitalize = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
-
-                            translatedQuestions.push({
-                                text,
-                                options: options.map(capitalize),
-                                correctAnswer: randomIndex
+                        try {
+                            const translatedBatch = await translateBatchWithGemini(batch);
+                            translatedQuestions.push(...translatedBatch);
+                        } catch (geminiError) {
+                            console.warn("Gemini batch failed, falling back to Google for this batch:", geminiError);
+                            
+                            // Google Fallback (Flat strings)
+                            const stringsToTranslate: string[] = [];
+                            batch.forEach((q: RawQuestion) => {
+                                stringsToTranslate.push(q.text, q.correct, ...q.incorrect);
                             });
-                        });
+                            
+                            const translatedStrings = await translateBatchWithGoogle(stringsToTranslate);
+                            
+                            let stringIdx = 0;
+                            batch.forEach((q: RawQuestion) => {
+                                const text = translatedStrings[stringIdx++] || q.text;
+                                const correct = translatedStrings[stringIdx++] || q.correct;
+                                const incorrect = [
+                                    translatedStrings[stringIdx++] || q.incorrect[0],
+                                    translatedStrings[stringIdx++] || q.incorrect[1],
+                                    translatedStrings[stringIdx++] || q.incorrect[2]
+                                ];
+
+                                const options = [...incorrect];
+                                const randomIndex = Math.floor(Math.random() * (options.length + 1));
+                                options.splice(randomIndex, 0, correct);
+
+                                const capitalize = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+
+                                translatedQuestions.push({
+                                    text,
+                                    options: options.map(capitalize),
+                                    correctAnswer: randomIndex
+                                });
+                            });
+                        }
                     }
                     return translatedQuestions;
                 } catch (translateError) {
-                    console.error("Translation failed, returning raw questions:", translateError);
-                    return rawQuestions.map((q: RawQuestion) => {
-                        const options = [...q.incorrect];
-                        const randomIndex = Math.floor(Math.random() * (options.length + 1));
-                        options.splice(randomIndex, 0, q.correct);
-                        return {
-                            text: q.text,
-                            options: options,
-                            correctAnswer: randomIndex
-                        };
-                    });
+                    console.error("Critical translation failure, returning fallback questions:", translateError);
+                    return getFallbackQuestions(amount);
                 }
 
             } else if (data.response_code === 5 && retries > 0) {

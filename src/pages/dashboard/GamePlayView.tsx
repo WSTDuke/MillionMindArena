@@ -92,7 +92,8 @@ const GamePlayView = () => {
 
 
     const transitionStep2Ref = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const processedRoundRef = useRef<number>(0);
+    const processedRoundRef = useRef<number>(-1);
+    const questionEndTimeRef = useRef<number | null>(null);
     const bufferedOpponentAnswers = useRef<Map<number, { isCorrect: boolean; points: number; currentScore?: number }>>(new Map());
     const currIndexRef = useRef<number>(0);
     const isConfirmedRef = useRef<boolean>(false);
@@ -178,11 +179,11 @@ const GamePlayView = () => {
                     if (!ignore) {
                         // Store clan data for icons
                         setMyClanData({
-                            name: tData.clan1?.name || "MY CLAN",
+                            name: tData.clan1?.name || "CLAN CỦA BẠN",
                             icon: tData.clan1?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan1"
                         });
                         setOppClanData({
-                            name: tData.clan2?.name || "OPP CLAN",
+                            name: tData.clan2?.name || "CLAN ĐỐI THỦ",
                             icon: tData.clan2?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan2"
                         });
                         
@@ -638,13 +639,13 @@ const GamePlayView = () => {
     }, [isNavigatingAway]);
 
     // --- BOT AI ANSWER SIMULATION ---
-    const simulateBotAnswer = useCallback((questionIndex: number) => {
+    const simulateBotAnswer = useCallback((questionIndex: number, forceImmediate: boolean = false) => {
         if ((!isBot && !isTournament) || !questions[questionIndex]) return;
 
-        const delay = 2000 + Math.random() * 2000; // 2-4 seconds
+        const delay = forceImmediate ? 0 : (2000 + Math.random() * 2000); // Bypass delay on timeout
         const accuracy = 0.65; 
 
-        setTimeout(() => {
+        const executeSimulation = () => {
             // 1. Simulate Main Bot Opponent (for 1v1 UI compatibility)
             const isCorrect = Math.random() < accuracy;
             const points = isCorrect ? 1 : 0;
@@ -676,20 +677,21 @@ const GamePlayView = () => {
                     };
                 }));
 
-                // Update Clan Scores
-                // My Clan Score = My Points + Teammates Points
-                // But wait, "My Points" are added when *I* answer. 
-                // We need to decouple this. 
-                // Let's add Opponents points now. 
-                // My teammates points should be added when *I* answer OR when revealed.
-                // For simplicity, let's reveal everyone when the "Round Transition" happens.
-                
-                // Store round result for batch update later?
-                // Or just update state now but hidden?
-                // Let's update state now, effectively "answering".
+                // FIX: Always set opponentAnswered in tournament mode to unblock the legacy transition logic
+                // This allows the game to progress as soon as the bots "finish" their simulation delay.
+                const isOpponentCorrect = Math.random() < 0.6;
+                setOpponentAnswered({ 
+                    isCorrect: isOpponentCorrect, 
+                    points: isOpponentCorrect ? 1 : 0 
+                });
             }
-            
-        }, delay);
+        };
+
+        if (delay === 0) {
+            executeSimulation();
+        } else {
+            setTimeout(executeSimulation, delay);
+        }
     }, [isBot, isTournament, questions]);
 
     const handleAnswerSelect = useCallback((index: number) => {
@@ -737,16 +739,13 @@ const GamePlayView = () => {
 
         setRoundPoints((prev: { user: number; opponent: number }) => ({ ...prev, user: uPoints }));
         
-        // BOT MODE: Trigger AI answer simulation
-        if (isBot) {
-            simulateBotAnswer(currentQuestionIndex);
+        // BOT/TOURNAMENT: Trigger AI answer simulation
+        if (isBot || isTournament) {
+            simulateBotAnswer(currentQuestionIndex, index === -1);
         }
-    }, [isConfirmed, showTransition, isGameOver, questions, currentQuestionIndex, userId, userScore, isBot, simulateBotAnswer]);
+    }, [isConfirmed, showTransition, isGameOver, questions, currentQuestionIndex, userId, userScore, isBot, isTournament, simulateBotAnswer]);
 
-    // --- SYNCHRONIZED TRANSITION LOGIC ---
-    // --- SYNCHRONIZED TRANSITION LOGIC ---
     useEffect(() => {
-        // Check if we have a buffered answer for the current question index
         const bufferedAnswer = bufferedOpponentAnswers.current.get(currentQuestionIndex);
         if (bufferedAnswer && opponentAnswered === null) {
             console.log(`Sync: Applying buffered answer for Q${currentQuestionIndex}`);
@@ -758,17 +757,15 @@ const GamePlayView = () => {
         const bothReady = isConfirmed && (opponentAnswered !== null || timeLeft === 0);
         
         // --- STEP 1: TRIGGER TRANSITION ---
-        // This effect ONLY handles the initial trigger when both players are ready.
         if (bothReady && !showTransition && !showSetResults && !isGameOver && !isLoadingQuestions && questions.length > 0 && processedQuestionRef.current !== currentQuestionIndex) {
             
-            // Start the timer ONLY if it hasn't started yet for THIS question
             if (!transitionTimerRef.current) {
-                console.log("Both players ready. Starting transition timer for index:", currentQuestionIndex);
+                console.log("Starting transition reveal timer for index:", currentQuestionIndex);
                 
+                // Mark as processed immediately to prevent duplicate timers if re-renders occur
+                processedQuestionRef.current = currentQuestionIndex;
+
                 transitionTimerRef.current = setTimeout(() => {
-                    // Critical: Mark as processed INSIDE the timer
-                    processedQuestionRef.current = currentQuestionIndex;
-                    
                     // Final update of local scores before showing transition
                     const uPoints = selectedAnswer === questions[currentQuestionIndex].correctAnswer ? 1 : 0;
                     
@@ -793,100 +790,118 @@ const GamePlayView = () => {
 
                     setShowTransition(true);
                     
-                    // We DO NOT handle the timeout -> next question logic here anymore.
-                    // That is moved to the [showTransition] effect below.
-                    // This ensures cleanup of THIS effect doesn't kill the sequence.
                     transitionTimerRef.current = null;
-                }, 1000);
+                }, 800); // Shorter delay for snappier feel
             }
         }
 
         return () => {
-             if (transitionTimerRef.current) {
+             // Only clear timer if we are actually moving to a DIFFERENT question
+             // This prevents the 0-second re-renders from killing the reveal transition.
+             if (transitionTimerRef.current && processedQuestionRef.current !== currentQuestionIndex) {
                  clearTimeout(transitionTimerRef.current);
-                 // Note: We might want to NOT clear it if we want it to persist through small re-renders, 
-                 // but standard practice is to clear.
-                 // The Issue was likely that SETTING showTransition(true) caused THIS effect to re-run and clean up step 2.
+                 transitionTimerRef.current = null;
              }
         };
-    }, [isConfirmed, opponentAnswered, timeLeft, showTransition, isGameOver, isLoadingQuestions, questions, currentQuestionIndex, selectedAnswer, showSetResults]);
+    }, [isConfirmed, opponentAnswered, timeLeft === 0, showTransition, isGameOver, isLoadingQuestions, questions, currentQuestionIndex, selectedAnswer, showSetResults]);
 
 
-    // --- STEP 2: HANDLE TRANSITION SEQUENCE ---
-    // This effect runs whenever showTransition becomes TRUE.
+    // SHARED LOGIC: Progress the match after a round ends
+    const advanceMatch = (latestSetScores: { user: number; opponent: number }) => {
+        const hasWinner = latestSetScores.user >= winsNeeded || latestSetScores.opponent >= winsNeeded;
+        
+        pointsRef.current = { user: 0, opponent: 0 };
+        setRoundPointsHistory({ user: 0, opponent: 0 });
+        setUserScore(0);
+        setOpponentScore(0);
+
+        if (!hasWinner && currentRound < maxRounds) {
+            setCurrentQuestionIndex(prev => prev + 1);
+            setOpponentAnswered(null);
+            
+            // Trigger "HIỆP X" black screen intro
+            setShowRoundIntro(true);
+            setTimeout(() => setShowRoundIntro(false), 2000);
+            
+            setTimeLeft(QUESTION_TIME);
+            setIsConfirmed(false);
+            setSelectedAnswer(null);
+        } else {
+            setIsMatchEnding(true);
+            setTimeout(() => {
+                setIsGameOver(true);
+                setIsMatchEnding(false);
+            }, 2000);
+        }
+    };
+
+    // --- STEP 2: HANDLE QUESTION TRANSITION ---
     useEffect(() => {
         if (showTransition) {
-            console.log("Transition active. Scheduling next step...");
-            const timer = setTimeout(() => {
-                setShowTransition(false);
-
-                // Round/Set Logic
-                if (isEndOfRound) {
-                    if (processedRoundRef.current === currentRound) return;
-                    processedRoundRef.current = currentRound;
-
-                    // SAVE ROUND SCORES TO HISTORY
-                    const currentRoundScores = { ...pointsRef.current };
-                    setRoundScoresRecord(prev => [...prev, currentRoundScores]);
-
-                    const finalUserRoundPoints = pointsRef.current.user;
-                    const finalOpponentRoundPoints = pointsRef.current.opponent;
-                    const userWonSet = finalUserRoundPoints > finalOpponentRoundPoints;
-                    const isRoundDraw = finalUserRoundPoints === finalOpponentRoundPoints;
+            console.log("Question transition active. Scheduling next step...");
+                const timer = setTimeout(() => {
+                    setShowTransition(false);
                     
-                    let newSetScores = { ...setScores };
+                    if (isEndOfRound) {
+                        // --- ROUND COMPLETION LOGIC ---
+                        if (processedRoundRef.current !== currentRound) {
+                            processedRoundRef.current = currentRound;
 
-                    if (!isRoundDraw) {
-                        newSetScores = {
-                            user: userWonSet ? setScores.user + 1 : setScores.user,
-                            opponent: userWonSet ? setScores.opponent : setScores.opponent + 1
-                        };
-                        setSetScores(newSetScores);
-                    }
-                    
-                    setShowSetResults(true);
-                    const hasWinner = newSetScores.user >= winsNeeded || newSetScores.opponent >= winsNeeded;
+                            // SAVE ROUND SCORES TO HISTORY
+                            const currentRoundScores = { ...pointsRef.current };
+                            setRoundScoresRecord(prev => [...prev, currentRoundScores]);
 
-                    setTimeout(() => {
-                        setShowSetResults(false);
-                        pointsRef.current = { user: 0, opponent: 0 };
-                        setRoundPointsHistory({ user: 0, opponent: 0 });
-                        setUserScore(0);
-                        setOpponentScore(0);
-
-                        if (!hasWinner && currentRound < maxRounds) {
-                            setCurrentQuestionIndex(prev => prev + 1);
-                            setOpponentAnswered(null);
+                            const finalUserRoundPoints = pointsRef.current.user;
+                            const finalOpponentRoundPoints = pointsRef.current.opponent;
+                            const userWonSet = finalUserRoundPoints > finalOpponentRoundPoints;
+                            const isRoundDraw = finalUserRoundPoints === finalOpponentRoundPoints;
                             
-                            if (!isTournament) {
-                                setShowRoundIntro(true);
-                                setTimeout(() => setShowRoundIntro(false), 2000);
+                            let newSetScores = { ...setScores };
+
+                            if (!isRoundDraw) {
+                                newSetScores = {
+                                    user: userWonSet ? setScores.user + 1 : setScores.user,
+                                    opponent: userWonSet ? setScores.opponent : setScores.opponent + 1
+                                };
+                                setSetScores(newSetScores);
                             }
                             
-                            setTimeLeft(QUESTION_TIME);
-                            setIsConfirmed(false);
-                            setSelectedAnswer(null);
-                        } else {
-                            setIsMatchEnding(true);
-                            setTimeout(() => {
-                                setIsGameOver(true);
-                                setIsMatchEnding(false);
-                            }, 2000);
+                            // TOURNAMENT SKIP: Go directly to next round/end if tournament
+                            if (isTournament) {
+                                console.log("Tournament mode detected. Skipping round results overlay.");
+                                advanceMatch(newSetScores);
+                            } else {
+                                setShowSetResults(true);
+                            }
                         }
-                    }, 4000);
-                } else {
-                    // Standard Next Question
-                    setCurrentQuestionIndex(prev => prev + 1);
-                    setOpponentAnswered(null);
-                    setTimeLeft(QUESTION_TIME);
-                    setIsConfirmed(false);
-                    setSelectedAnswer(null);
-                }
-            }, 4000);
+                    } else {
+                        // Standard Next Question
+                        setCurrentQuestionIndex(prev => prev + 1);
+                        setOpponentAnswered(null);
+                        setTimeLeft(QUESTION_TIME);
+                        setIsConfirmed(false);
+                        setSelectedAnswer(null);
+                    }
+                }, 2500); // Reduced from 4000ms to 2500ms
 
             return () => clearTimeout(timer);
         }
-    }, [showTransition, isEndOfRound, currentRound, maxRounds, isTournament, setScores, winsNeeded, QUESTION_TIME]);
+    }, [showTransition, isEndOfRound, currentRound, QUESTION_TIME, setScores, winsNeeded, isTournament]);
+
+
+
+    // --- STEP 3: HANDLE ROUND/SET RESULTS SEQUENCE ---
+    useEffect(() => {
+        if (showSetResults) {
+            console.log("Round results active. Scheduling match progression...");
+            const timer = setTimeout(() => {
+                setShowSetResults(false);
+                advanceMatch(setScores);
+            }, 5000); // 5s for results screen
+
+            return () => clearTimeout(timer);
+        }
+    }, [showSetResults, currentRound, maxRounds, isTournament, setScores, winsNeeded, QUESTION_TIME]);
 
     useEffect(() => {
         let timer: ReturnType<typeof setInterval> | ReturnType<typeof setTimeout>;
@@ -906,12 +921,12 @@ const GamePlayView = () => {
         } else if (gameStage === 'starting') {
             // Snappier transition to playing state
             timer = setTimeout(() => {
-                setGameStage('playing');
-                // Skip round intro for tournament mode
-                if (!isTournament) {
-                    setShowRoundIntro(true);
-                    setTimeout(() => setShowRoundIntro(false), 2000);
-                }
+                // Show "HIỆP 1" black screen before starting
+                setShowRoundIntro(true);
+                setTimeout(() => {
+                    setShowRoundIntro(false);
+                    setGameStage('playing');
+                }, 2000);
             }, 500);
         }
         return () => {
@@ -923,22 +938,38 @@ const GamePlayView = () => {
     }, [gameStage, isLoadingQuestions, isTournament]);
 
     useEffect(() => {
-        // TIMER DECOUPLING: Timer keeps ticking even after confirmation
-        // This ensures the round ALWAYS ends when time is up, regardless of sync status.
-        if (timeLeft > 0 && gameStage === 'playing' && !showTransition && !isGameOver) {
-            const timer = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
-            return () => clearInterval(timer);
-        } else if (timeLeft === 0 && gameStage === 'playing' && !showTransition && !isGameOver) {
-            // Timeout reached
-            if (!isConfirmed) {
-                // Defer to avoid cascading render lint error
-                const timeoutId = setTimeout(() => {
-                     handleAnswerSelect(-1);
-                }, 0);
-                return () => clearTimeout(timeoutId);
+        // TIMER REFACTOR: Use absolute timestamps to prevent freeze on tab blur
+        if (gameStage === 'playing' && !showTransition && !isGameOver && !showRoundIntro) {
+            if (!questionEndTimeRef.current) {
+                questionEndTimeRef.current = Date.now() + (timeLeft * 1000);
             }
+
+            const timer = setInterval(() => {
+                const now = Date.now();
+                const remaining = Math.max(0, Math.ceil((questionEndTimeRef.current! - now) / 1000));
+                
+                if (remaining !== timeLeft) {
+                    setTimeLeft(remaining);
+                }
+
+                if (remaining === 0) {
+                    clearInterval(timer);
+                    // Force timeout if not confirmed
+                    if (!isConfirmedRef.current && !showTransition) {
+                        console.log("Timer hit 0: Forcing timeout selection.");
+                        handleAnswerSelect(-1);
+                    }
+                }
+            }, 200); // Check every 200ms
+            
+            return () => clearInterval(timer);
+        } else {
+            // Reset end time when not in playing state
+            questionEndTimeRef.current = null;
         }
-    }, [timeLeft, gameStage, showTransition, isGameOver, isConfirmed, handleAnswerSelect]);
+
+        // (Logical timeout check moved to interval for precision)
+    }, [timeLeft, gameStage, showTransition, isGameOver, isConfirmed, handleAnswerSelect, showRoundIntro, currentQuestionIndex]);
 
     // Cleanup buffered answers on unmount
     useEffect(() => {
@@ -973,13 +1004,14 @@ const GamePlayView = () => {
             return () => clearInterval(timer);
         } else if (tournamentCountdown === 0) {
             // 4. Handle "START" / "FIGHT" Transition
-            // Keep "START" on screen for 0.5 seconds (reduced from 1s), then switch stage.
+            // Keep "START" on screen for 0.5 seconds, then switch to "HIỆP 1"
             const transitionTimer = setTimeout(() => {
-                setGameStage('playing');
-                // Keep overlay for a brief moment to ensure seamless transition to Question UI
+                setShowTournamentIntro(false);
+                setShowRoundIntro(true);
                 setTimeout(() => {
-                    setShowTournamentIntro(false);
-                }, 500); 
+                    setShowRoundIntro(false);
+                    setGameStage('playing');
+                }, 2000);
             }, 500);
             
             return () => clearTimeout(transitionTimer);
@@ -1046,7 +1078,7 @@ const GamePlayView = () => {
                                 <img src={myClanData?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan1"} className="w-full h-full object-cover" alt="Clan Icon" />
                             </div>
                             <div className="flex flex-col">
-                                <span className="text-sm font-black uppercase text-blue-400 tracking-wider">MY CLAN</span>
+                                <span className="text-sm font-black uppercase text-blue-400 tracking-wider">{myClanData?.name || "CLAN CỦA BẠN"}</span>
                                 <span className="text-xs font-bold text-gray-400">Score: {userScore + myClanMembers.reduce((acc, m) => acc + m.score, 0)}</span>
                             </div>
                         </div>
@@ -1165,7 +1197,7 @@ const GamePlayView = () => {
                         {/* Clan Info */}
                         <div className="flex items-center gap-2">
                             <div className="flex flex-col items-end">
-                                <span className="text-sm font-black uppercase text-red-400 tracking-wider">OPP CLAN</span>
+                                <span className="text-sm font-black uppercase text-red-400 tracking-wider">{oppClanData?.name || "CLAN ĐỐI THỦ"}</span>
                                 <span className="text-xs font-bold text-gray-400">Score: {opponentClanMembers.reduce((acc, m) => acc + m.score, 0)}</span>
                             </div>
                             <div className="w-8 h-8 bg-neutral-900 border border-red-500/30 overflow-hidden">
@@ -1272,13 +1304,22 @@ const GamePlayView = () => {
 
                         <div className="inline-flex items-center gap-2 mb-6 opacity-60">
                             <span className="w-2 h-2 bg-fuchsia-500 rotate-45 animate-pulse"></span>
-                            <span className="text-xs font-black uppercase tracking-[0.3em] text-fuchsia-300">Câu hỏi</span>
+                            <span className="text-xs font-black uppercase tracking-[0.3em] text-fuchsia-300">Câu hỏi {questionNumberInRound}</span>
                             <span className="w-2 h-2 bg-fuchsia-500 rotate-45 animate-pulse"></span>
                         </div>
 
                         <h2 className="text-2xl md:text-3xl font-black leading-tight text-white mb-2 uppercase italic tracking-wide drop-shadow-lg min-h-[4rem] flex items-center justify-center">
                             {question?.text || "Initializing data stream..."}
                         </h2>
+
+                        {question?.note && (
+                            <div className="mt-4 px-4 py-2 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center justify-center gap-2 animate-in fade-in slide-in-from-top-2 max-w-2xl mx-auto">
+                                <div className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse"></div>
+                                <p className="text-[10px] font-bold text-amber-400 uppercase tracking-wider leading-relaxed">
+                                    {question.note}
+                                </p>
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -1502,7 +1543,7 @@ const GamePlayView = () => {
                                  <>
                                      {/* My Clan Team - 5 Members */}
                                      <div className="flex flex-col items-center gap-4 animate-in slide-in-from-left-20 duration-700">
-                                         <div className="text-xl font-black text-blue-400 uppercase tracking-wider mb-2">{myClanData?.name || "MY CLAN"}</div>
+                                         <div className="text-xl font-black text-blue-400 uppercase tracking-wider mb-2">{myClanData?.name || "CLAN CỦA BẠN"}</div>
                                          <div className="flex items-center gap-3">
                                              {/* User (Me) */}
                                              <div className="flex flex-col items-center gap-2">
@@ -1530,31 +1571,38 @@ const GamePlayView = () => {
                                                  </div>
                                              ))}
                                          </div>
-                                         <div className="text-sm font-bold text-white">Total: {userScore + myClanMembers.reduce((acc, m) => acc + m.score, 0)}</div>
+                                         <div className="text-sm font-bold text-white">Điểm số: {userScore + myClanMembers.reduce((acc, m) => acc + m.score, 0)}</div>
                                      </div>
 
                                      {/* Center Status */}
                                      <div className="flex flex-col items-center gap-4 text-center my-8 md:my-0">
-                                         <div className="px-4 py-1 bg-white/10 rounded-full border border-white/10 text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">Kết thúc câu hỏi</div>
+                                         <div className="px-4 py-1 bg-white/10 rounded-full border border-white/10 text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">Kết thúc câu hỏi {questionNumberInRound}</div>
                                          <div className="text-4xl md:text-6xl font-black text-white italic tracking-tighter uppercase">
                                              {isEndOfRound ? (
                                                  <>
-                                                    <span className="text-red-500">ROUND {currentRound}</span>
-                                                    <br />COMPLETE
+                                                    <span>KẾT THÚC</span>
+                                                    <br />
+                                                    <span>HIỆP {currentRound}</span>
                                                  </>
-                                             ) : 'NEXT QUESTION'}
+                                             ) : (
+                                                 <>
+                                                    <span>CÂU HỎI</span>
+                                                    <br />
+                                                    <span>TIẾP THEO</span>
+                                                 </>
+                                             )}
                                          </div>
                                          {isEndOfRound && currentRound < maxRounds && (
                                              <div className="mt-4 px-8 py-3 bg-red-600 text-white font-black uppercase tracking-widest shadow-[0_0_30px_rgba(239,68,68,0.4)] animate-pulse"
                                                   style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
-                                                 Chuẩn bị round {currentRound + 1}...
+                                                 Chuẩn bị hiệp {currentRound + 1}...
                                              </div>
                                          )}
                                      </div>
 
                                      {/* Opponent Clan Team - 5 Members */}
                                      <div className="flex flex-col items-center gap-4 animate-in slide-in-from-right-20 duration-700">
-                                         <div className="text-xl font-black text-red-400 uppercase tracking-wider mb-2">{oppClanData?.name || "OPP CLAN"}</div>
+                                         <div className="text-xl font-black text-red-400 uppercase tracking-wider mb-2">{oppClanData?.name || "CLAN ĐỐI THỦ"}</div>
                                          <div className="flex items-center gap-3">
                                              {opponentClanMembers.map((m, i) => (
                                                  <div key={i} className="flex flex-col items-center gap-2">
@@ -1592,17 +1640,14 @@ const GamePlayView = () => {
                                      <div className="flex flex-col items-center gap-4 text-center my-8 md:my-0">
                                          <div className="px-4 py-1 bg-white/10 rounded-full border border-white/10 text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">Status Update</div>
                                          <div className="text-4xl md:text-6xl font-black text-white italic tracking-tighter uppercase">
-                                             {isEndOfRound ? (
-                                                 <>
-                                                    <span className="text-red-500">ROUND {currentRound}</span>
-                                                    <br />COMPLETE
-                                                 </>
-                                             ) : 'NEXT QUESTION'}
+                                             <span>KẾT THÚC</span>
+                                             <br />
+                                             <span>CÂU HỎI {questionNumberInRound}</span>
                                          </div>
                                          {isEndOfRound && currentRound < maxRounds && (
                                              <div className="mt-4 px-8 py-3 bg-red-600 text-white font-black uppercase tracking-widest shadow-[0_0_30px_rgba(239,68,68,0.4)] animate-pulse"
                                                   style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
-                                                 Chuẩn bị round {currentRound + 1}...
+                                                 Chuẩn bị hiệp {currentRound + 1}...
                                              </div>
                                          )}
                                      </div>
@@ -1655,7 +1700,7 @@ const GamePlayView = () => {
                                       <div className="w-20 h-20 md:w-24 md:h-24 rounded-2xl overflow-hidden border-2 border-white/20 mb-4 shadow-2xl skew-x-[-5deg]">
                                          <img src={profile?.avatar_url || "https://api.dicebear.com/7.x/avataaars/svg?seed=fallback"} className="w-full h-full object-cover scale-110" alt="Me" />
                                      </div>
-                                     <div className="text-gray-400 font-bold uppercase text-[10px] tracking-[0.3em] mb-1">Điểm số các round</div>
+                                     <div className="text-gray-400 font-bold uppercase text-[10px] tracking-[0.3em] mb-1">Điểm số các hiệp</div>
                                      <div className="text-4xl md:text-5xl font-black text-white tracking-tighter mb-4">{userScore}</div>
                                  </div>
                              </div>
@@ -1670,7 +1715,7 @@ const GamePlayView = () => {
                                       <div className="w-20 h-20 md:w-24 md:h-24 rounded-2xl overflow-hidden border-2 border-white/20 mb-4 shadow-2xl skew-x-[5deg]">
                                          <img src={opponent?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${opponent?.id || 'opponent'}`} className="w-full h-full object-cover scale-110" alt="Opponent" />
                                      </div>
-                                     <div className="text-gray-400 font-bold uppercase text-[10px] tracking-[0.3em] mb-1">Điểm số các round</div>
+                                     <div className="text-gray-400 font-bold uppercase text-[10px] tracking-[0.3em] mb-1">Điểm số các hiệp</div>
                                      <div className="text-4xl md:text-5xl font-black text-white tracking-tighter mb-4">{opponentScore}</div>
                                  </div>
                              </div>
@@ -1776,7 +1821,7 @@ const GamePlayView = () => {
                 <div className="fixed inset-0 z-[100] bg-black flex items-center justify-center animate-in fade-in duration-700">
                     <div className="flex flex-col items-center gap-4 animate-in zoom-in-50 duration-500">
                          <div className="w-20 h-1 bg-white/20 rounded-full mb-4"></div>
-                         <h1 className="text-6xl md:text-9xl font-black text-white tracking-[0.2em] italic">ROUND {currentRound}</h1>
+                         <h1 className="text-6xl md:text-9xl font-black text-white tracking-[0.2em] italic">HIỆP {currentRound}</h1>
                          <div className="w-20 h-1 bg-white/20 rounded-full mt-4"></div>
                          <p className="text-gray-500 font-bold uppercase tracking-[0.5em] animate-pulse">Bắt đầu round đấu...</p>
                     </div>
@@ -1792,7 +1837,7 @@ const GamePlayView = () => {
                         <div className="absolute bottom-0 w-full h-px bg-gradient-to-r from-transparent via-white/20 to-transparent fixed"></div>
                         
                         <div className="relative mb-12 text-center z-10">
-                            <h2 className="text-3xl md:text-5xl font-black text-white uppercase italic tracking-tighter mb-8 animate-in slide-in-from-top-10 duration-700">ROUND {currentRound} COMPLETE</h2>
+                            <h2 className="text-3xl md:text-5xl font-black text-white uppercase italic tracking-tighter mb-8 animate-in slide-in-from-top-10 duration-700">HIỆP {currentRound} HOÀN TẤT</h2>
                             
                             <div className="px-12 py-6 bg-white/5 border border-white/10 backdrop-blur-xl relative" style={{ clipPath: 'polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px)' }}>
                                 <span className="text-xs font-bold text-gray-400 uppercase tracking-[0.4em] mb-2 block">Match Score</span>
@@ -1865,16 +1910,16 @@ const GamePlayView = () => {
                                  <Trophy size={16} className="text-yellow-500" />
                                  <span className="text-xs font-black uppercase tracking-[0.3em] text-white">Tournament Match</span>
                              </div>
-                             <h1 className="text-4xl md:text-6xl font-black text-white uppercase italic tracking-tighter">
-                                 Team Battle <span className="text-fuchsia-500">5 vs 5</span>
-                             </h1>
+                              <h1 className="text-4xl md:text-6xl font-black text-white uppercase italic tracking-tighter">
+                                  Đại chiến <span className="text-fuchsia-500">5 vs 5 </span>
+                              </h1>
                          </div>
 
                          {/* VS Area */}
                          <div className="flex items-center justify-center gap-12 md:gap-24 w-full">
                              {/* My Team - 5 Members Horizontal */}
                              <div className="flex flex-col items-center gap-6 animate-in slide-in-from-left-20 duration-700">
-                                 <div className="text-2xl font-black text-blue-400 uppercase tracking-wider">MY CLAN</div>
+                                 <div className="text-2xl font-black text-blue-400 uppercase tracking-wider">{myClanData?.name || "CLAN CỦA BẠN"}</div>
                                  <div className="flex items-center gap-3">
                                      {/* User (Me) */}
                                      <div className="relative">
@@ -1916,7 +1961,7 @@ const GamePlayView = () => {
 
                              {/* Opponent Team - 5 Members Horizontal */}
                              <div className="flex flex-col items-center gap-6 animate-in slide-in-from-right-20 duration-700">
-                                 <div className="text-2xl font-black text-red-400 uppercase tracking-wider">OPP CLAN</div>
+                                 <div className="text-2xl font-black text-red-400 uppercase tracking-wider">{oppClanData?.name || "CLAN ĐỐI THỦ"}</div>
                                  <div className="flex items-center gap-3">
                                      {opponentClanMembers.slice(0, 5).map((m, i) => (
                                          <div key={i} className="relative">
