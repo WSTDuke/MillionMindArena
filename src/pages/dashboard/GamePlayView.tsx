@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
-import { Trophy, HelpCircle, Zap, Shield, LogOut, Loader2, Flag } from 'lucide-react';
+import { Trophy, HelpCircle, Zap, Shield, LogOut, Loader2, Flag, Star, Crown, Target, Users } from 'lucide-react';
 
 import { supabase } from '../../lib/supabase';
 import type { RealtimeChannel } from '@supabase/supabase-js';
@@ -11,6 +11,7 @@ import type { ProcessedQuestion } from '../../lib/trivia';
 import { leaveRoom as leaveRoomUtil } from '../../lib/roomManager';
 import { calculateMMRChange, getRankFromMMR } from '../../lib/ranking';
 import RankBadge from '../../components/shared/RankBadge';
+import { CLAN_ICONS } from './clanConstants';
 
 interface Profile {
     display_name: string;
@@ -88,14 +89,13 @@ const GamePlayView = () => {
     const leaveRoomRef = useRef<(() => Promise<void>) | null>(null);
     const processedQuestionRef = useRef<number>(-1);
     const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const questionsLoadedRef = useRef(false);
 
 
-    const transitionStep2Ref = useRef<ReturnType<typeof setTimeout> | null>(null);
     const processedRoundRef = useRef<number>(-1);
     const questionEndTimeRef = useRef<number | null>(null);
     const bufferedOpponentAnswers = useRef<Map<number, { isCorrect: boolean; points: number; currentScore?: number }>>(new Map());
     const currIndexRef = useRef<number>(0);
+    const tournamentPointsRef = useRef<{ teammates: number, opponents: number }>({ teammates: 0, opponents: 0 });
     const isConfirmedRef = useRef<boolean>(false);
     const winsNeededRef = useRef<number>(1);
 
@@ -121,8 +121,8 @@ const GamePlayView = () => {
     // 5 AI opponents.
     const [myClanMembers, setMyClanMembers] = useState<ClanMemberResult[]>([]);
     const [opponentClanMembers, setOpponentClanMembers] = useState<ClanMemberResult[]>([]);
-    const [myClanData, setMyClanData] = useState<{name: string, icon: string} | null>(null);
-    const [oppClanData, setOppClanData] = useState<{name: string, icon: string} | null>(null);
+    const [myClanData, setMyClanData] = useState<{name: string, icon: string, color: string} | null>(null);
+    const [oppClanData, setOppClanData] = useState<{name: string, icon: string, color: string} | null>(null);
 
 
     const questionsPerRound = roomSettings?.questions_per_round || 10;
@@ -141,10 +141,26 @@ const GamePlayView = () => {
     const maxRounds = getRoundsFromFormat(matchFormat);
     const winsNeeded = Math.ceil(maxRounds / 2);
 
+    // Calculate MVP for tournament
+    const getMVP = () => {
+        const all = [...myClanMembers, ...opponentClanMembers];
+        // Add current user to the list for comparison
+        all.push({ id: userId || 'me', name: profile?.display_name || 'BẠN', avatar: profile?.avatar_url || '', score: userScore, isCorrect: null });
+        return all.reduce((prev, current) => (prev.score > current.score) ? prev : current, all[0]);
+    };
+    const mvp = isTournament ? getMVP() : null;
+
     const currentRound = Math.floor(currentQuestionIndex / questionsPerRound) + 1;
     const questionNumberInRound = (currentQuestionIndex % questionsPerRound) + 1;
     const isEndOfRound = questionNumberInRound === questionsPerRound;
     const question = questions[currentQuestionIndex];
+
+    // --- RENDER HELPERS ---
+    const ClanIcon = ({ iconName, color, className = "w-6 h-6" }: { iconName: string, color: string, className?: string }) => {
+        const iconObj = CLAN_ICONS.find(item => item.id === iconName);
+        const IconComponent = iconObj ? iconObj.icon : Shield;
+        return <IconComponent className={className} style={{ color }} />;
+    };
 
 
     useEffect(() => {
@@ -180,11 +196,13 @@ const GamePlayView = () => {
                         // Store clan data for icons
                         setMyClanData({
                             name: tData.clan1?.name || "CLAN CỦA BẠN",
-                            icon: tData.clan1?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan1"
+                            icon: tData.clan1?.icon || "Shield",
+                            color: tData.clan1?.color || "#3b82f6"
                         });
                         setOppClanData({
                             name: tData.clan2?.name || "CLAN ĐỐI THỦ",
-                            icon: tData.clan2?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan2"
+                            icon: tData.clan2?.icon || "Swords",
+                            color: tData.clan2?.color || "#ef4444"
                         });
                         
                         // Setup Mock Teammates & Opponents based on passed data
@@ -657,9 +675,13 @@ const GamePlayView = () => {
 
             // 2. TOURNAMENT 5v5 SIMULATION
             if (isTournament) {
+                let teammatesCorrectCount = 0;
+                let opponentsCorrectCount = 0;
+
                 // Simulate 4 Teammates
                 setMyClanMembers(prev => prev.map(m => {
                     const isTeammateCorrect = Math.random() < 0.6; // 60% chance
+                    if (isTeammateCorrect) teammatesCorrectCount++;
                     return {
                         ...m,
                         isCorrect: isTeammateCorrect,
@@ -670,12 +692,18 @@ const GamePlayView = () => {
                 // Simulate 5 Opponents
                 setOpponentClanMembers(prev => prev.map(m => {
                     const isOppCorrect = Math.random() < 0.6;
+                    if (isOppCorrect) opponentsCorrectCount++;
                     return {
                         ...m,
                         isCorrect: isOppCorrect,
                         score: m.score + (isOppCorrect ? 1 : 0)
                     };
                 }));
+
+                tournamentPointsRef.current = {
+                    teammates: teammatesCorrectCount,
+                    opponents: opponentsCorrectCount
+                };
 
                 // FIX: Always set opponentAnswered in tournament mode to unblock the legacy transition logic
                 // This allows the game to progress as soon as the bots "finish" their simulation delay.
@@ -701,40 +729,23 @@ const GamePlayView = () => {
         setSelectedAnswer(index);
 
         const currentQ = questions[currentQuestionIndex];
-        const uPoints = index === currentQ.correctAnswer ? 1 : 0;
+        const uPoints = index === currentQ.correctAnswer ? 10 : 0;
 
         // Broadcast answer via persistent channel
         if (channelRef.current) {
-            // Check if status is joined/subscribed to avoid REST fallback
-            const status = channelRef.current.state;
-            if (status === 'joined') {
-                const newScore = userScore + uPoints;
-                channelRef.current.send({
-                    type: 'broadcast',
-                    event: 'player_answer',
-                    payload: {
-                        userId: userId,
-                        qIndex: currentQuestionIndex,
-                        isCorrect: index === currentQ.correctAnswer,
-                        points: uPoints,
-                        currentScore: newScore
-                    }
-                });
-            } else {
-                console.warn("Realtime: Channel not fully joined yet (status: " + status + "). Attempting send anyway...");
-                const newScore = userScore + uPoints;
-                channelRef.current.send({
-                    type: 'broadcast',
-                    event: 'player_answer',
-                    payload: {
-                        userId: userId,
-                        qIndex: currentQuestionIndex,
-                        isCorrect: index === currentQ.correctAnswer,
-                        points: uPoints,
-                        currentScore: newScore
-                    }
-                });
-            }
+            const newScore = userScore + uPoints;
+            
+            channelRef.current.send({
+                type: 'broadcast',
+                event: 'player_answer',
+                payload: {
+                    userId: userId,
+                    qIndex: currentQuestionIndex,
+                    isCorrect: index === currentQ.correctAnswer,
+                    points: uPoints,
+                    currentScore: newScore
+                }
+            });
         }
 
         setRoundPoints((prev: { user: number; opponent: number }) => ({ ...prev, user: uPoints }));
@@ -767,24 +778,21 @@ const GamePlayView = () => {
 
                 transitionTimerRef.current = setTimeout(() => {
                     // Final update of local scores before showing transition
-                    const uPoints = selectedAnswer === questions[currentQuestionIndex].correctAnswer ? 1 : 0;
-                    
-                    setUserScore(prev => prev + uPoints);
-                    if (pointsRef.current) pointsRef.current.user += uPoints;
-                    setRoundPointsHistory(prev => ({ ...prev, user: prev.user + uPoints }));
+                    const uPoints = (selectedAnswer === questions[currentQuestionIndex]?.correctAnswer) ? 10 : 0;
+                    const roundPointsAdded = uPoints + (isTournament ? tournamentPointsRef.current.teammates * 10 : 0);
+                    setUserScore(prev => prev + roundPointsAdded);
+                    if (pointsRef.current) pointsRef.current.user += roundPointsAdded;
+                    setRoundPointsHistory(prev => ({ ...prev, user: prev.user + roundPointsAdded }));
                     
                     // UPDATE OPPONENT SCORE (Delayed Reveal)
                     const buff = bufferedOpponentAnswers.current.get(currentQuestionIndex);
                     if (buff) {
-                         if (buff.currentScore !== undefined) {
-                            setOpponentScore(buff.currentScore);
-                            if (pointsRef.current) pointsRef.current.opponent = buff.currentScore;
-                            setRoundPointsHistory(prev => ({ ...prev, opponent: buff.currentScore! }));
-                        } else {
-                            setOpponentScore(prev => prev + buff.points);
-                             if (pointsRef.current) pointsRef.current.opponent += buff.points;
-                            setRoundPointsHistory(prev => ({ ...prev, opponent: prev.opponent + buff.points }));
-                        }
+                        const oppPointsTotal = isTournament ? (tournamentPointsRef.current.opponents * 10) : (buff.points * 10);
+                        
+                        setOpponentScore(prev => prev + oppPointsTotal);
+                        if (pointsRef.current) pointsRef.current.opponent += oppPointsTotal;
+                        setRoundPointsHistory(prev => ({ ...prev, opponent: prev.opponent + oppPointsTotal }));
+                        
                         setRoundPoints(prev => ({ ...prev, opponent: buff.points }));
                     }
 
@@ -803,7 +811,7 @@ const GamePlayView = () => {
                  transitionTimerRef.current = null;
              }
         };
-    }, [isConfirmed, opponentAnswered, timeLeft === 0, showTransition, isGameOver, isLoadingQuestions, questions, currentQuestionIndex, selectedAnswer, showSetResults]);
+    }, [isConfirmed, opponentAnswered, timeLeft, showTransition, isGameOver, isLoadingQuestions, questions, currentQuestionIndex, selectedAnswer, showSetResults, isTournament]);
 
 
     // SHARED LOGIC: Progress the match after a round ends
@@ -1074,8 +1082,8 @@ const GamePlayView = () => {
                     <div className="flex flex-col gap-3">
                         {/* Clan Info */}
                         <div className="flex items-center gap-2">
-                            <div className="w-8 h-8 bg-neutral-900 border border-blue-500/30 overflow-hidden">
-                                <img src={myClanData?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan1"} className="w-full h-full object-cover" alt="Clan Icon" />
+                            <div className="w-8 h-8 bg-neutral-900 border border-blue-500/30 overflow-hidden flex items-center justify-center">
+                                {myClanData && <ClanIcon iconName={myClanData.icon} color={myClanData.color} className="w-5 h-5" />}
                             </div>
                             <div className="flex flex-col">
                                 <span className="text-sm font-black uppercase text-blue-400 tracking-wider">{myClanData?.name || "CLAN CỦA BẠN"}</span>
@@ -1200,8 +1208,8 @@ const GamePlayView = () => {
                                 <span className="text-sm font-black uppercase text-red-400 tracking-wider">{oppClanData?.name || "CLAN ĐỐI THỦ"}</span>
                                 <span className="text-xs font-bold text-gray-400">Score: {opponentClanMembers.reduce((acc, m) => acc + m.score, 0)}</span>
                             </div>
-                            <div className="w-8 h-8 bg-neutral-900 border border-red-500/30 overflow-hidden">
-                                <img src={oppClanData?.icon || "https://api.dicebear.com/7.x/shapes/svg?seed=clan2"} className="w-full h-full object-cover" alt="Opp Clan Icon" />
+                            <div className="w-8 h-8 bg-neutral-900 border border-red-500/30 overflow-hidden flex items-center justify-center">
+                                {oppClanData && <ClanIcon iconName={oppClanData.icon} color={oppClanData.color} className="w-5 h-5" />}
                             </div>
                         </div>
                         
@@ -1672,8 +1680,215 @@ const GamePlayView = () => {
                 </div>
             )}
 
-            {/* Game Over / Results Overlay */}
-            {isGameOver && (
+            {/* TOURNAMENT GAME OVER / RESULTS OVERLAY */}
+            {isGameOver && isTournament && (
+                <div className="fixed inset-0 z-[150] bg-[#050510] animate-in fade-in duration-700 overflow-y-auto custom-scrollbar font-sans">
+                    {/* Cinematic Background */}
+                    <div className="fixed inset-0 pointer-events-none">
+                        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(59,130,246,0.1),transparent_70%)]"></div>
+                        <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-blue-500/50 to-transparent"></div>
+                        <div className="absolute bottom-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-fuchsia-500/50 to-transparent"></div>
+                        <div className="absolute inset-0 bg-dot-pattern opacity-10"></div>
+                        
+                        {/* Animated Glows */}
+                        <div className={`absolute top-1/4 left-1/4 w-[500px] h-[500px] blur-[150px] rounded-full animate-pulse duration-[4s] ${setScores.user >= setScores.opponent ? 'bg-blue-600/20' : 'bg-red-600/20'}`}></div>
+                        <div className={`absolute bottom-1/4 right-1/4 w-[500px] h-[500px] blur-[150px] rounded-full animate-pulse duration-[6s] delay-1000 ${setScores.user >= setScores.opponent ? 'bg-indigo-600/10' : 'bg-orange-600/10'}`}></div>
+                    </div>
+
+                    <div className="relative min-h-screen flex flex-col items-center py-12 px-4 z-10">
+                        {/* Title Section */}
+                        <div className="mb-12 text-center space-y-4">
+                            <div className="flex items-center justify-center gap-4 mb-2">
+                                <div className="h-px w-12 bg-gradient-to-r from-transparent to-white/40"></div>
+                                <span className="text-xs font-black uppercase tracking-[0.5em] text-blue-400">Match Summary</span>
+                                <div className="h-px w-12 bg-gradient-to-l from-transparent to-white/40"></div>
+                            </div>
+                            <h1 className="text-7xl md:text-9xl font-[1000] italic tracking-tighter uppercase leading-none text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-gray-500 drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)] animate-in zoom-in-50 duration-700 scale-[1.1]">
+                                {setScores.user > setScores.opponent ? 'VICTORY' : setScores.user === setScores.opponent ? 'DRAW' : 'DEFEAT'}
+                            </h1>
+                        </div>
+
+                        {/* Main Match Card */}
+                        <div className="w-full max-w-6xl space-y-8">
+                            {/* Scoreboard Header */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center bg-white/[0.03] border border-white/10 backdrop-blur-3xl p-8 rounded-[40px] shadow-2xl relative overflow-hidden group">
+                                {/* Clan 1 */}
+                                <div className="flex flex-col items-center md:items-start gap-4 order-2 md:order-1">
+                                    <div className="flex items-center gap-4">
+                                        <div className="w-16 h-16 bg-neutral-900 border-2 border-blue-500/50 flex items-center justify-center rounded-2xl shadow-lg rotate-[-5deg]">
+                                            {myClanData && <ClanIcon iconName={myClanData.icon} color={myClanData.color} className="w-10 h-10" />}
+                                        </div>
+                                        <div className="space-y-1">
+                                            <div className="text-xs font-black text-blue-500 uppercase tracking-widest">TEAM CLAN</div>
+                                            <div className="text-2xl font-black text-white uppercase tracking-tighter italic">{myClanData?.name}</div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Main Match Score */}
+                                <div className="flex flex-col items-center justify-center space-y-2 order-1 md:order-2">
+                                    <div className="text-xs font-black text-gray-500 uppercase tracking-[0.3em]">SERIES SCORE</div>
+                                    <div className="flex items-center gap-8 text-7xl md:text-8xl font-black italic tracking-tighter">
+                                        <span className={setScores.user >= setScores.opponent ? 'text-white' : 'text-gray-600'}>{setScores.user}</span>
+                                        <div className="h-16 w-px bg-white/10 rotate-12"></div>
+                                        <span className={setScores.opponent >= setScores.user ? 'text-white' : 'text-gray-600'}>{setScores.opponent}</span>
+                                    </div>
+                                </div>
+
+                                {/* Clan 2 */}
+                                <div className="flex flex-col items-center md:items-end gap-4 order-3 md:order-3">
+                                    <div className="flex items-center md:flex-row-reverse gap-4">
+                                        <div className="w-16 h-16 bg-neutral-900 border-2 border-red-500/50 flex items-center justify-center rounded-2xl shadow-lg rotate-[5deg]">
+                                            {oppClanData && <ClanIcon iconName={oppClanData.icon} color={oppClanData.color} className="w-10 h-10" />}
+                                        </div>
+                                        <div className="space-y-1 text-center md:text-right">
+                                            <div className="text-xs font-black text-red-500 uppercase tracking-widest">TEAM OPPONENT</div>
+                                            <div className="text-2xl font-black text-white uppercase tracking-tighter italic">{oppClanData?.name}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Round Breakdown Table */}
+                            <div className="bg-white/[0.03] border border-white/5 backdrop-blur-xl rounded-[30px] p-6 overflow-hidden">
+                                <div className="flex items-center gap-2 mb-6 px-4">
+                                    <Target size={18} className="text-fuchsia-500" />
+                                    <span className="text-sm font-black uppercase tracking-widest text-white">Round-by-Round Breakdown</span>
+                                </div>
+                                <div className="grid grid-cols-4 md:grid-cols-6 gap-4">
+                                    {Array.from({ length: maxRounds }).map((_, i) => (
+                                        <div key={i} className={`flex flex-col border border-white/5 rounded-2xl p-4 transition-all duration-500 ${roundScoresRecord[i] ? 'bg-white/5' : 'opacity-20 backdrop-grayscale'}`}>
+                                            <div className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-3 pb-2 border-b border-white/5">Round {i + 1}</div>
+                                            <div className="flex flex-col gap-2 font-black italic text-xl">
+                                                <div className="flex justify-between items-center text-blue-400">
+                                                    <span>{roundScoresRecord[i]?.user ?? 0}</span>
+                                                    <div className={`w-1.5 h-1.5 rounded-full ${roundScoresRecord[i]?.user > roundScoresRecord[i]?.opponent ? 'bg-blue-400' : 'bg-transparent'}`}></div>
+                                                </div>
+                                                <div className="flex justify-between items-center text-red-400">
+                                                    <span>{roundScoresRecord[i]?.opponent ?? 0}</span>
+                                                    <div className={`w-1.5 h-1.5 rounded-full ${roundScoresRecord[i]?.opponent > roundScoresRecord[i]?.user ? 'bg-red-400' : 'bg-transparent'}`}></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Players List 5v5 */}
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+                                {/* MY TEAM */}
+                                <div className="space-y-4">
+                                    <div className="flex items-center justify-between px-4">
+                                        <div className="flex items-center gap-2">
+                                            <Users size={18} className="text-blue-500" />
+                                            <span className="text-sm font-black uppercase tracking-widest text-white">{myClanData?.name} ROSTER</span>
+                                        </div>
+                                        <span className="text-[10px] font-bold text-gray-500">POINTS EARNED</span>
+                                    </div>
+                                    <div className="space-y-2">
+                                        {/* User Me */}
+                                        <div className={`flex items-center justify-between p-4 bg-blue-500/10 border border-blue-500/20 rounded-2xl relative group transition-all duration-300 hover:bg-blue-500/20`}>
+                                            <div className="flex items-center gap-4">
+                                                <div className="relative">
+                                                    <img src={profile?.avatar_url} className="w-12 h-12 rounded-xl object-cover border border-white/10" alt="ME" />
+                                                    {mvp?.id === userId && (
+                                                        <div className="absolute -top-2 -right-2 bg-yellow-500 text-black p-1 rounded-lg">
+                                                            <Crown size={12} fill="currentColor" />
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="text-sm font-black text-white italic uppercase">{profile?.display_name}</span>
+                                                    <span className="text-[10px] font-bold text-blue-400/60 tracking-widest uppercase">YOU (MVP)</span>
+                                                </div>
+                                            </div>
+                                            <div className="text-2xl font-black italic text-white">{userScore}</div>
+                                        </div>
+                                        {/* AI Teammates */}
+                                        {myClanMembers.map((m, i) => (
+                                            <div key={i} className={`flex items-center justify-between p-4 bg-white/5 border border-white/5 rounded-2xl transition-all duration-300 hover:border-white/20`}>
+                                                <div className="flex items-center gap-4">
+                                                    <div className="relative">
+                                                        <img src={m.avatar} className="w-12 h-12 rounded-xl object-cover border border-white/10 opacity-70" alt={m.name} />
+                                                        {mvp?.id === m.id && (
+                                                            <div className="absolute -top-2 -right-2 bg-yellow-500 text-black p-1 rounded-lg">
+                                                                <Crown size={12} fill="currentColor" />
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    <span className="text-sm font-black text-gray-300 uppercase italic">{m.name}</span>
+                                                </div>
+                                                <div className="text-2xl font-black italic text-gray-400">{m.score}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* OPPONENT TEAM */}
+                                <div className="space-y-4">
+                                    <div className="flex items-center justify-between px-4">
+                                        <div className="flex items-center gap-2">
+                                            <Users size={18} className="text-red-500" />
+                                            <span className="text-sm font-black uppercase tracking-widest text-white">{oppClanData?.name} ROSTER</span>
+                                        </div>
+                                        <span className="text-[10px] font-bold text-gray-500">POINTS EARNED</span>
+                                    </div>
+                                    <div className="space-y-2">
+                                        {opponentClanMembers.map((m, i) => (
+                                            <div key={i} className={`flex items-center justify-between p-4 bg-white/5 border border-white/5 rounded-2xl transition-all duration-300 hover:border-white/20`}>
+                                                <div className="flex items-center gap-4">
+                                                    <div className="relative">
+                                                        <img src={m.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${m.id}`} className="w-12 h-12 rounded-xl object-cover border border-white/10 opacity-70" alt={m.name} />
+                                                        {mvp?.id === m.id && (
+                                                            <div className="absolute -top-2 -right-2 bg-yellow-500 text-black p-1 rounded-lg">
+                                                                <Crown size={12} fill="currentColor" />
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    <span className="text-sm font-black text-gray-300 uppercase italic">{m.name}</span>
+                                                </div>
+                                                <div className="text-2xl font-black italic text-gray-400">{m.score}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* MVP Spotlight Banner (Mobile/Summary) */}
+                        <div className="w-full max-w-lg mt-12 mb-12">
+                            <div className="bg-gradient-to-r from-yellow-500/20 via-yellow-500/40 to-yellow-500/20 border-y border-yellow-500/30 p-4 flex flex-col items-center gap-2 relative overflow-hidden">
+                                <div className="absolute inset-0 bg-[linear-gradient(45deg,transparent_25%,rgba(255,255,255,0.1)_50%,transparent_75%)] bg-[length:250%_250%] animate-[shimmer_3s_infinite]"></div>
+                                <Crown size={32} className="text-yellow-500 mb-1" />
+                                <div className="text-[10px] font-black uppercase tracking-[0.5em] text-yellow-500">PLAYER OF THE MATCH</div>
+                                <div className="text-3xl font-black text-white italic uppercase tracking-tighter">{mvp?.name}</div>
+                            </div>
+                        </div>
+
+                        {/* Navigation Actions */}
+                        <div className="flex flex-col md:flex-row gap-6 w-full max-w-md items-center justify-center mt-4">
+                            <button 
+                                onClick={async () => {
+                                    setIsNavigatingAway(true);
+                                    await leaveRoom();
+                                    navigate('/dashboard/arena');
+                                }}
+                                className="w-full py-5 bg-white text-black font-black uppercase tracking-widest hover:scale-[1.02] active:scale-[0.98] transition-all relative overflow-hidden group shadow-[0_20px_40px_rgba(255,255,255,0.1)]"
+                                style={{ clipPath: 'polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px)' }}
+                            >
+                                <span className="relative z-10 flex items-center justify-center gap-3">
+                                    <LogOut size={20} />
+                                    QUAY LẠI SẢNH CHÍNH
+                                </span>
+                                <div className="absolute inset-0 bg-blue-600 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Standard Game Over / Results Overlay (Non-Tournament) */}
+            {isGameOver && !isTournament && (
                 <div className="fixed inset-0 z-[70] bg-neutral-950 animate-in fade-in duration-500 overflow-y-auto custom-scrollbar">
                     <div className="absolute inset-0 z-0">
                         <div className={`absolute inset-0 ${setScores.user > setScores.opponent ? 'bg-blue-900/60' : setScores.user < setScores.opponent ? 'bg-red-900/60' : 'bg-neutral-900/60'} mix-blend-overlay fixed inset-0`}></div>
