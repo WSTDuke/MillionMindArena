@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
-import { Trophy, HelpCircle, Zap, Shield, LogOut, Loader2, Flag, Star, Crown, Target, Users } from 'lucide-react';
+import { Trophy, HelpCircle, Zap, Shield, LogOut, Loader2, Flag, Crown, Target, Users } from 'lucide-react';
 
 import { supabase } from '../../lib/supabase';
 import type { RealtimeChannel } from '@supabase/supabase-js';
@@ -12,6 +12,20 @@ import { leaveRoom as leaveRoomUtil } from '../../lib/roomManager';
 import { calculateMMRChange, getRankFromMMR } from '../../lib/ranking';
 import RankBadge from '../../components/shared/RankBadge';
 import { CLAN_ICONS } from './clanConstants';
+
+interface TournamentMatchData {
+    clan1?: { name: string; icon: string; color: string };
+    clan2?: { name: string; icon: string; color: string };
+    members1?: { id: string; name: string; avatar: string }[];
+    members2?: { id: string; name: string; avatar: string }[];
+}
+
+interface GameLocationState {
+    isTournament?: boolean;
+    tournamentMatchData?: TournamentMatchData;
+    isBot?: boolean;
+    isCustom?: boolean;
+}
 
 interface Profile {
     display_name: string;
@@ -79,6 +93,7 @@ const GamePlayView = () => {
     const [showMMRSummary, setShowMMRSummary] = useState(false);
     const [mmrChange, setMmrChange] = useState<number>(0);
     const [userNewMMR, setUserNewMMR] = useState<number | null>(null);
+    const [resultsStep, setResultsStep] = useState<1 | 2>(1);
     const mountTimeRef = useRef(0);
     const channelRef = useRef<RealtimeChannel | null>(null);
 
@@ -142,12 +157,12 @@ const GamePlayView = () => {
     const winsNeeded = Math.ceil(maxRounds / 2);
 
     // Calculate MVP for tournament
-    const getMVP = () => {
+    const getMVP = useCallback(() => {
         const all = [...myClanMembers, ...opponentClanMembers];
         // Add current user to the list for comparison
         all.push({ id: userId || 'me', name: profile?.display_name || 'BẠN', avatar: profile?.avatar_url || '', score: userScore, isCorrect: null });
         return all.reduce((prev, current) => (prev.score > current.score) ? prev : current, all[0]);
-    };
+    }, [myClanMembers, opponentClanMembers, userId, profile, userScore]);
     const mvp = isTournament ? getMVP() : null;
 
     const currentRound = Math.floor(currentQuestionIndex / questionsPerRound) + 1;
@@ -167,11 +182,13 @@ const GamePlayView = () => {
         let ignore = false;
 
         // Redirect if state is lost (e.g., page reload)
-        const locState = location.state as any;
+        const locState = location.state as GameLocationState;
         if (!roomId && !isBot && !locState?.isTournament) {
             navigate('/dashboard/arena');
             return;
         }
+
+        setResultsStep(1);
 
         const getData = async () => {
             try {
@@ -184,13 +201,14 @@ const GamePlayView = () => {
                 if (!ignore) setUserId(user.id);
 
                 // 2. BOT MODE / TOURNAMENT MODE
-                const locState = (location as any).state;
+                const locState = location.state as GameLocationState;
                 if (locState?.isTournament) {
                     if (!ignore) {
                         setIsTournament(true);
                         setShowTournamentIntro(true);
                     }
                     const tData = locState.tournamentMatchData;
+                    if (!tData) return;
                     
                     if (!ignore) {
                         // Store clan data for icons
@@ -209,9 +227,9 @@ const GamePlayView = () => {
                         const myM = tData.members1 || [];
                         const opM = tData.members2 || [];
                         
-                        const otherTeammates = myM.filter((m: any) => m.id !== user.id).slice(0, 4);
+                        const otherTeammates = myM.filter((m: {id: string}) => m.id !== user.id).slice(0, 4);
                         
-                        const myTeamState: ClanMemberResult[] = otherTeammates.map((m: any) => ({
+                        const myTeamState: ClanMemberResult[] = otherTeammates.map((m: {id: string, name: string, avatar: string}) => ({
                             id: m.id,
                             name: m.name,
                             avatar: m.avatar,
@@ -221,7 +239,7 @@ const GamePlayView = () => {
                         
                         setMyClanMembers(myTeamState);
 
-                        const opTeamState: ClanMemberResult[] = opM.map((m: any) => ({
+                        const opTeamState: ClanMemberResult[] = opM.map((m: {id: string, name: string, avatar: string}) => ({
                              id: m.id,
                              name: m.name,
                              avatar: m.avatar,
@@ -355,7 +373,7 @@ const GamePlayView = () => {
         return () => {
             ignore = true;
         };
-    }, [roomId, isRanked, isBot, navigate]);
+    }, [roomId, isRanked, isBot, navigate, location.state]);
 
     const leaveRoom = useCallback(async () => {
         if (!roomId) return;
@@ -387,7 +405,7 @@ const GamePlayView = () => {
         };
 
         // 3. Save game history IMMEDIATELY for both players
-        const mode = isRanked ? 'Ranked' : (isBot ? 'Bot' : ((location as any).state?.isCustom ? 'Custom' : 'Normal'));
+        const mode = isRanked ? 'Ranked' : (isBot ? 'Bot' : ((location.state as { isCustom?: boolean })?.isCustom ? 'Custom' : 'Normal'));
         const userRoundScores = roundScoresRecord.map(r => r.user);
         const opponentRoundScores = roundScoresRecord.map(r => r.opponent);
         
@@ -546,7 +564,7 @@ const GamePlayView = () => {
                         };
 
                         // Save history IMMEDIATELY for winner
-                        const mode = isRanked ? 'Ranked' : (isBot ? 'Bot' : ((location as any).state?.isCustom ? 'Custom' : 'Normal'));
+                        const mode = isRanked ? 'Ranked' : (isBot ? 'Bot' : ((location.state as GameLocationState)?.isCustom ? 'Custom' : 'Normal'));
                         const userRoundScores = roundScoresRecord.map(r => r.user);
                         
                         // Pad scores
@@ -630,7 +648,7 @@ const GamePlayView = () => {
             isMounted = false;
             cleanup();
         };
-    }, [roomId]);
+    }, [roomId, userId, isBot, isGameOver, isRanked, location.state, opponent?.id, roomSettings?.format, roundScoresRecord, setScores.opponent, setScores.user]);
 
     useEffect(() => {
         mountTimeRef.current = Date.now();
@@ -764,8 +782,12 @@ const GamePlayView = () => {
             // Score update is deferred to transition block
         }
 
-        // Condition: Both have answered OR (I have answered and timer is 0)
-        const bothReady = isConfirmed && (opponentAnswered !== null || timeLeft === 0);
+        // Condition: Everyone has answered OR timer hit zero
+        const allParticipantsAnswered = isTournament 
+            ? (isConfirmed && myClanMembers.every(m => m.isCorrect !== null) && opponentClanMembers.every(m => m.isCorrect !== null))
+            : (isConfirmed && opponentAnswered !== null);
+
+        const bothReady = allParticipantsAnswered || timeLeft === 0;
         
         // --- STEP 1: TRIGGER TRANSITION ---
         if (bothReady && !showTransition && !showSetResults && !isGameOver && !isLoadingQuestions && questions.length > 0 && processedQuestionRef.current !== currentQuestionIndex) {
@@ -811,11 +833,11 @@ const GamePlayView = () => {
                  transitionTimerRef.current = null;
              }
         };
-    }, [isConfirmed, opponentAnswered, timeLeft, showTransition, isGameOver, isLoadingQuestions, questions, currentQuestionIndex, selectedAnswer, showSetResults, isTournament]);
+    }, [isConfirmed, opponentAnswered, timeLeft, showTransition, isGameOver, isLoadingQuestions, questions, currentQuestionIndex, selectedAnswer, showSetResults, isTournament, myClanMembers, opponentClanMembers]);
 
 
     // SHARED LOGIC: Progress the match after a round ends
-    const advanceMatch = (latestSetScores: { user: number; opponent: number }) => {
+    const advanceMatch = useCallback((latestSetScores: { user: number; opponent: number }) => {
         const hasWinner = latestSetScores.user >= winsNeeded || latestSetScores.opponent >= winsNeeded;
         
         pointsRef.current = { user: 0, opponent: 0 };
@@ -826,6 +848,8 @@ const GamePlayView = () => {
         if (!hasWinner && currentRound < maxRounds) {
             setCurrentQuestionIndex(prev => prev + 1);
             setOpponentAnswered(null);
+            setMyClanMembers(prev => prev.map(m => ({ ...m, isCorrect: null })));
+            setOpponentClanMembers(prev => prev.map(m => ({ ...m, isCorrect: null })));
             
             // Trigger "HIỆP X" black screen intro
             setShowRoundIntro(true);
@@ -841,7 +865,7 @@ const GamePlayView = () => {
                 setIsMatchEnding(false);
             }, 2000);
         }
-    };
+    }, [winsNeeded, currentRound, maxRounds, QUESTION_TIME]);
 
     // --- STEP 2: HANDLE QUESTION TRANSITION ---
     useEffect(() => {
@@ -886,6 +910,8 @@ const GamePlayView = () => {
                         // Standard Next Question
                         setCurrentQuestionIndex(prev => prev + 1);
                         setOpponentAnswered(null);
+                        setMyClanMembers(prev => prev.map(m => ({ ...m, isCorrect: null })));
+                        setOpponentClanMembers(prev => prev.map(m => ({ ...m, isCorrect: null })));
                         setTimeLeft(QUESTION_TIME);
                         setIsConfirmed(false);
                         setSelectedAnswer(null);
@@ -894,7 +920,7 @@ const GamePlayView = () => {
 
             return () => clearTimeout(timer);
         }
-    }, [showTransition, isEndOfRound, currentRound, QUESTION_TIME, setScores, winsNeeded, isTournament]);
+    }, [showTransition, isEndOfRound, currentRound, QUESTION_TIME, setScores, winsNeeded, isTournament, advanceMatch]);
 
 
 
@@ -909,7 +935,7 @@ const GamePlayView = () => {
 
             return () => clearTimeout(timer);
         }
-    }, [showSetResults, currentRound, maxRounds, isTournament, setScores, winsNeeded, QUESTION_TIME]);
+    }, [showSetResults, currentRound, maxRounds, isTournament, setScores, winsNeeded, QUESTION_TIME, advanceMatch]);
 
     useEffect(() => {
         let timer: ReturnType<typeof setInterval> | ReturnType<typeof setTimeout>;
@@ -939,8 +965,8 @@ const GamePlayView = () => {
         }
         return () => {
             if (timer) {
-                if (gameStage === 'preparing') clearInterval(timer as any);
-                else clearTimeout(timer as any);
+                if (gameStage === 'preparing') clearInterval(timer as unknown as number);
+                else clearTimeout(timer as unknown as number);
             }
         };
     }, [gameStage, isLoadingQuestions, isTournament]);
@@ -988,29 +1014,21 @@ const GamePlayView = () => {
     }, []);
 
 
-    // --- TOURNAMENT COUNTDOWN ---
     // --- TOURNAMENT COUNTDOWN (Refactored) ---
+    const isCountdownZero = tournamentCountdown === 0;
     useEffect(() => {
-        // 1. Wait until fully loaded
-        if (isLoadingQuestions) return;
-        
-        // 2. Only run if we are in tournament intro mode
-        if (!showTournamentIntro || !isTournament) return;
-
-        // 3. Start Countdown (Using setInterval with functional update to strict-mode proof)
-        // Only start if count > 0. If 0, we handle transition below.
-        if (tournamentCountdown > 0) {
+        if (isTournament && showTournamentIntro && !isCountdownZero) {
             const timer = setInterval(() => {
-                setTournamentCountdown((prev) => {
+                setTournamentCountdown(prev => {
                     if (prev <= 1) {
                         clearInterval(timer);
-                        return 0; 
+                        return 0;
                     }
                     return prev - 1;
                 });
             }, 1000);
             return () => clearInterval(timer);
-        } else if (tournamentCountdown === 0) {
+        } else if (isCountdownZero && showTournamentIntro) {
             // 4. Handle "START" / "FIGHT" Transition
             // Keep "START" on screen for 0.5 seconds, then switch to "HIỆP 1"
             const transitionTimer = setTimeout(() => {
@@ -1024,7 +1042,7 @@ const GamePlayView = () => {
             
             return () => clearTimeout(transitionTimer);
         }
-    }, [isLoadingQuestions, showTournamentIntro, isTournament, tournamentCountdown === 0]); // Dependency on the boolean prevents constant re-creation unless state flips
+    }, [isLoadingQuestions, showTournamentIntro, isTournament, isCountdownZero, tournamentCountdown]);
 
     if (fetchError || (!isLoadingQuestions && questions.length === 0)) {
         return (
@@ -1069,7 +1087,7 @@ const GamePlayView = () => {
     }
     
     return (
-        <div className="h-screen bg-black text-white p-4 md:p-8 flex flex-col animate-fade-in relative overflow-hidden font-sans selection:bg-fuchsia-500 selection:text-white">
+        <div className="min-h-screen bg-black text-white p-4 md:p-8 flex flex-col animate-fade-in relative overflow-y-auto overflow-x-hidden font-sans selection:bg-fuchsia-500 selection:text-white">
             {/* Background Pattern & Glows */}
             <div className="fixed inset-0 bg-dot-pattern opacity-5 pointer-events-none"></div>
             <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-blue-600/10 blur-[120px] pointer-events-none"></div>
@@ -1095,10 +1113,10 @@ const GamePlayView = () => {
                         <div className="flex items-center gap-2">
                             {/* User (Me) */}
                             <div className="relative group/member">
-                                <div className={`w-12 h-12 md:w-14 md:h-14 border-2 overflow-hidden transition-all duration-300 ${
+                                    <div className={`w-12 h-12 md:w-14 md:h-14 border-2 overflow-hidden transition-all duration-300 ${
                                     isConfirmed 
                                         ? (selectedAnswer === question?.correctAnswer ? 'border-green-500 ring-2 ring-green-500/50' : 'border-red-500 ring-2 ring-red-500/50')
-                                        : 'border-blue-500/50'
+                                        : 'border-zinc-700'
                                 }`}
                                      style={{ clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
                                     <img src={profile?.avatar_url || "https://api.dicebear.com/7.x/avataaars/svg?seed=me"} 
@@ -1117,7 +1135,7 @@ const GamePlayView = () => {
                                             ? 'border-green-500 ring-2 ring-green-500/50' 
                                             : m.isCorrect === false 
                                             ? 'border-red-500 ring-2 ring-red-500/50' 
-                                            : 'border-blue-500/30'
+                                            : 'border-zinc-700'
                                     }`}
                                          style={{ clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
                                         <img src={m.avatar || "https://api.dicebear.com/7.x/avataaars/svg?seed=teammate"} 
@@ -1221,8 +1239,8 @@ const GamePlayView = () => {
                                         m.isCorrect === true 
                                             ? 'border-red-500 ring-2 ring-red-500/50' 
                                             : m.isCorrect === false 
-                                            ? 'border-gray-600 ring-2 ring-gray-600/50' 
-                                            : 'border-red-500/30'
+                                            ? 'border-fuchsia-100 ring-2 ring-fuchsia-100/50' 
+                                            : 'border-zinc-700'
                                     }`}
                                          style={{ clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
                                         <img src={m.avatar || "https://api.dicebear.com/7.x/avataaars/svg?seed=opponent"} 
@@ -1682,7 +1700,7 @@ const GamePlayView = () => {
 
             {/* TOURNAMENT GAME OVER / RESULTS OVERLAY */}
             {isGameOver && isTournament && (
-                <div className="fixed inset-0 z-[150] bg-[#050510] animate-in fade-in duration-700 overflow-y-auto custom-scrollbar font-sans">
+                <div className="fixed inset-0 z-[150] bg-[#050510] animate-in fade-in duration-700 overflow-y-auto h-[100dvh] custom-scrollbar font-sans">
                     {/* Cinematic Background */}
                     <div className="fixed inset-0 pointer-events-none">
                         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(59,130,246,0.1),transparent_70%)]"></div>
@@ -1695,216 +1713,246 @@ const GamePlayView = () => {
                         <div className={`absolute bottom-1/4 right-1/4 w-[500px] h-[500px] blur-[150px] rounded-full animate-pulse duration-[6s] delay-1000 ${setScores.user >= setScores.opponent ? 'bg-indigo-600/10' : 'bg-orange-600/10'}`}></div>
                     </div>
 
-                    <div className="relative min-h-screen flex flex-col items-center py-12 px-4 z-10">
-                        {/* Title Section */}
-                        <div className="mb-12 text-center space-y-4">
-                            <div className="flex items-center justify-center gap-4 mb-2">
-                                <div className="h-px w-12 bg-gradient-to-r from-transparent to-white/40"></div>
-                                <span className="text-xs font-black uppercase tracking-[0.5em] text-blue-400">Match Summary</span>
-                                <div className="h-px w-12 bg-gradient-to-l from-transparent to-white/40"></div>
-                            </div>
-                            <h1 className="text-7xl md:text-9xl font-[1000] italic tracking-tighter uppercase leading-none text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-gray-500 drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)] animate-in zoom-in-50 duration-700 scale-[1.1]">
-                                {setScores.user > setScores.opponent ? 'VICTORY' : setScores.user === setScores.opponent ? 'DRAW' : 'DEFEAT'}
-                            </h1>
-                        </div>
-
-                        {/* Main Match Card */}
-                        <div className="w-full max-w-6xl space-y-8">
-                            {/* Scoreboard Header */}
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center bg-white/[0.03] border border-white/10 backdrop-blur-3xl p-8 rounded-[40px] shadow-2xl relative overflow-hidden group">
-                                {/* Clan 1 */}
-                                <div className="flex flex-col items-center md:items-start gap-4 order-2 md:order-1">
-                                    <div className="flex items-center gap-4">
-                                        <div className="w-16 h-16 bg-neutral-900 border-2 border-blue-500/50 flex items-center justify-center rounded-2xl shadow-lg rotate-[-5deg]">
-                                            {myClanData && <ClanIcon iconName={myClanData.icon} color={myClanData.color} className="w-10 h-10" />}
-                                        </div>
-                                        <div className="space-y-1">
-                                            <div className="text-xs font-black text-blue-500 uppercase tracking-widest">TEAM CLAN</div>
-                                            <div className="text-2xl font-black text-white uppercase tracking-tighter italic">{myClanData?.name}</div>
-                                        </div>
+                    <div className="relative min-h-full flex flex-col items-center justify-center py-8 px-4 z-10">
+                        {resultsStep === 1 ? (
+                            <div className="w-full max-w-6xl animate-in fade-in slide-in-from-bottom-10 duration-700 flex flex-col items-center">
+                                {/* Title Section */}
+                                <div className="mb-4 md:mb-6 text-center space-y-2">
+                                    <div className="flex items-center justify-center gap-4 mb-1">
+                                        <div className="h-px w-12 bg-gradient-to-r from-transparent to-white/40"></div>
+                                        <span className="text-xs font-black uppercase tracking-[0.5em] text-blue-400">Kết quả trận đấu</span>
+                                        <div className="h-px w-12 bg-gradient-to-l from-transparent to-white/40"></div>
                                     </div>
+                                    <h1 className="text-5xl md:text-7xl lg:text-8xl font-[1000] italic tracking-tighter uppercase leading-none text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-gray-500 drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)]">
+                                        {setScores.user > setScores.opponent ? 'VICTORY' : setScores.user === setScores.opponent ? 'DRAW' : 'DEFEAT'}
+                                    </h1>
                                 </div>
 
-                                {/* Main Match Score */}
-                                <div className="flex flex-col items-center justify-center space-y-2 order-1 md:order-2">
-                                    <div className="text-xs font-black text-gray-500 uppercase tracking-[0.3em]">SERIES SCORE</div>
-                                    <div className="flex items-center gap-8 text-7xl md:text-8xl font-black italic tracking-tighter">
-                                        <span className={setScores.user >= setScores.opponent ? 'text-white' : 'text-gray-600'}>{setScores.user}</span>
-                                        <div className="h-16 w-px bg-white/10 rotate-12"></div>
-                                        <span className={setScores.opponent >= setScores.user ? 'text-white' : 'text-gray-600'}>{setScores.opponent}</span>
-                                    </div>
-                                </div>
-
-                                {/* Clan 2 */}
-                                <div className="flex flex-col items-center md:items-end gap-4 order-3 md:order-3">
-                                    <div className="flex items-center md:flex-row-reverse gap-4">
-                                        <div className="w-16 h-16 bg-neutral-900 border-2 border-red-500/50 flex items-center justify-center rounded-2xl shadow-lg rotate-[5deg]">
-                                            {oppClanData && <ClanIcon iconName={oppClanData.icon} color={oppClanData.color} className="w-10 h-10" />}
-                                        </div>
-                                        <div className="space-y-1 text-center md:text-right">
-                                            <div className="text-xs font-black text-red-500 uppercase tracking-widest">TEAM OPPONENT</div>
-                                            <div className="text-2xl font-black text-white uppercase tracking-tighter italic">{oppClanData?.name}</div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* Round Breakdown Table */}
-                            <div className="bg-white/[0.03] border border-white/5 backdrop-blur-xl rounded-[30px] p-6 overflow-hidden">
-                                <div className="flex items-center gap-2 mb-6 px-4">
-                                    <Target size={18} className="text-fuchsia-500" />
-                                    <span className="text-sm font-black uppercase tracking-widest text-white">Round-by-Round Breakdown</span>
-                                </div>
-                                <div className="grid grid-cols-4 md:grid-cols-6 gap-4">
-                                    {Array.from({ length: maxRounds }).map((_, i) => (
-                                        <div key={i} className={`flex flex-col border border-white/5 rounded-2xl p-4 transition-all duration-500 ${roundScoresRecord[i] ? 'bg-white/5' : 'opacity-20 backdrop-grayscale'}`}>
-                                            <div className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-3 pb-2 border-b border-white/5">Round {i + 1}</div>
-                                            <div className="flex flex-col gap-2 font-black italic text-xl">
-                                                <div className="flex justify-between items-center text-blue-400">
-                                                    <span>{roundScoresRecord[i]?.user ?? 0}</span>
-                                                    <div className={`w-1.5 h-1.5 rounded-full ${roundScoresRecord[i]?.user > roundScoresRecord[i]?.opponent ? 'bg-blue-400' : 'bg-transparent'}`}></div>
-                                                </div>
-                                                <div className="flex justify-between items-center text-red-400">
-                                                    <span>{roundScoresRecord[i]?.opponent ?? 0}</span>
-                                                    <div className={`w-1.5 h-1.5 rounded-full ${roundScoresRecord[i]?.opponent > roundScoresRecord[i]?.user ? 'bg-red-400' : 'bg-transparent'}`}></div>
-                                                </div>
+                                {/* Main Match Card */}
+                                <div className="w-full space-y-4 md:space-y-6">
+                                    {/* Scoreboard Header */}
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center bg-white/[0.03] border border-white/10 backdrop-blur-3xl p-4 md:p-6 shadow-2xl relative overflow-hidden group border-l-[4px] border-r-[4px] border-r-red-500 border-l-blue-500">
+                                        {/* Clan 1 */}
+                                        <div className="flex flex-col items-center md:items-start gap-3 relative overflow-visible">
+                                            <div className="relative z-10 space-y-0.5">
+                                                <div className="text-[10px] font-black text-blue-500 uppercase tracking-widest">CLAN CỦA BẠN</div>
+                                                <div className="text-xl md:text-3xl font-black text-white uppercase tracking-tighter italic">{myClanData?.name}</div>
+                                            </div>
+                                            <div className="absolute -left-6 top-1/2 -translate-y-1/2 opacity-[0.2] blur-[2px]">
+                                                {myClanData && <ClanIcon iconName={myClanData.icon} color={myClanData.color} className="w-28 h-28 md:w-54 md:h-54" />}
                                             </div>
                                         </div>
-                                    ))}
-                                </div>
-                            </div>
 
-                            {/* Players List 5v5 */}
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
-                                {/* MY TEAM */}
-                                <div className="space-y-4">
-                                    <div className="flex items-center justify-between px-4">
-                                        <div className="flex items-center gap-2">
-                                            <Users size={18} className="text-blue-500" />
-                                            <span className="text-sm font-black uppercase tracking-widest text-white">{myClanData?.name} ROSTER</span>
+                                        {/* Main Match Score */}
+                                        <div className="flex flex-col items-center justify-center space-y-1 relative z-10">
+                                            <div className="text-[10px] font-black text-gray-500 uppercase tracking-[0.3em]">TỈ SỐ TRẬN ĐẤU</div>
+                                            <div className="flex items-center gap-6 md:gap-8 text-6xl md:text-8xl font-black italic tracking-tighter">
+                                                <span className={setScores.user >= setScores.opponent ? 'text-white' : 'text-gray-600'}>{setScores.user}</span>
+                                                <div className="h-12 md:h-16 w-px bg-white/10 rotate-12"></div>
+                                                <span className={setScores.opponent >= setScores.user ? 'text-white' : 'text-gray-600'}>{setScores.opponent}</span>
+                                            </div>
                                         </div>
-                                        <span className="text-[10px] font-bold text-gray-500">POINTS EARNED</span>
+
+                                        {/* Clan 2 */}
+                                        <div className="flex flex-col items-center md:items-end gap-3 relative overflow-visible">
+                                            <div className="absolute -right-6 top-1/2 -translate-y-1/2 opacity-[0.2] blur-[2px]">
+                                                {oppClanData && <ClanIcon iconName={oppClanData.icon} color={oppClanData.color} className="w-28 h-28 md:w-54 md:h-54" />}
+                                            </div>
+                                            <div className="relative z-10 space-y-0.5 text-center md:text-right">
+                                                <div className="text-[10px] font-black text-red-500 uppercase tracking-widest">CLAN ĐỐI THỦ</div>
+                                                <div className="text-xl md:text-3xl font-black text-white uppercase tracking-tighter italic">{oppClanData?.name}</div>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div className="space-y-2">
-                                        {/* User Me */}
-                                        <div className={`flex items-center justify-between p-4 bg-blue-500/10 border border-blue-500/20 rounded-2xl relative group transition-all duration-300 hover:bg-blue-500/20`}>
-                                            <div className="flex items-center gap-4">
-                                                <div className="relative">
-                                                    <img src={profile?.avatar_url} className="w-12 h-12 rounded-xl object-cover border border-white/10" alt="ME" />
-                                                    {mvp?.id === userId && (
-                                                        <div className="absolute -top-2 -right-2 bg-yellow-500 text-black p-1 rounded-lg">
-                                                            <Crown size={12} fill="currentColor" />
+
+                                    {/* Round Breakdown Table */}
+                                    <div className="bg-white/[0.03] border border-white/5 backdrop-blur-xl p-3 md:p-4 overflow-hidden">
+                                        <div className="flex items-center gap-2 mb-4 px-4">
+                                            <Target size={16} className="text-fuchsia-500" />
+                                            <span className="text-xs font-black uppercase tracking-widest text-white">Kết quả các hiệp đấu</span>
+                                        </div>
+                                        <div className="grid grid-cols-4 md:grid-cols-6 gap-3 md:gap-4">
+                                            {Array.from({ length: maxRounds }).map((_, i) => (
+                                                <div key={i} className={`flex flex-col border border-white/5 rounded-2xl p-2 md:p-3 transition-all duration-500 ${roundScoresRecord[i] ? 'bg-white/5' : 'opacity-20 backdrop-grayscale'}`}>
+                                                    <div className="text-[9px] font-black text-gray-500 uppercase tracking-widest mb-2 pb-1 border-b border-white/5">Hiệp {i + 1}</div>
+                                                    <div className="flex flex-col gap-1.5 font-black italic text-lg md:text-xl">
+                                                        <div className="flex justify-between items-center text-blue-400">
+                                                            <span>{roundScoresRecord[i]?.user ?? 0}</span>
+                                                            <div className={`w-1 h-1 rounded-full ${roundScoresRecord[i]?.user > roundScoresRecord[i]?.opponent ? 'bg-blue-400' : 'bg-transparent'}`}></div>
                                                         </div>
-                                                    )}
-                                                </div>
-                                                <div className="flex flex-col">
-                                                    <span className="text-sm font-black text-white italic uppercase">{profile?.display_name}</span>
-                                                    <span className="text-[10px] font-bold text-blue-400/60 tracking-widest uppercase">YOU (MVP)</span>
-                                                </div>
-                                            </div>
-                                            <div className="text-2xl font-black italic text-white">{userScore}</div>
-                                        </div>
-                                        {/* AI Teammates */}
-                                        {myClanMembers.map((m, i) => (
-                                            <div key={i} className={`flex items-center justify-between p-4 bg-white/5 border border-white/5 rounded-2xl transition-all duration-300 hover:border-white/20`}>
-                                                <div className="flex items-center gap-4">
-                                                    <div className="relative">
-                                                        <img src={m.avatar} className="w-12 h-12 rounded-xl object-cover border border-white/10 opacity-70" alt={m.name} />
-                                                        {mvp?.id === m.id && (
-                                                            <div className="absolute -top-2 -right-2 bg-yellow-500 text-black p-1 rounded-lg">
-                                                                <Crown size={12} fill="currentColor" />
-                                                            </div>
-                                                        )}
+                                                        <div className="flex justify-between items-center text-red-400">
+                                                            <span>{roundScoresRecord[i]?.opponent ?? 0}</span>
+                                                            <div className={`w-1 h-1 rounded-full ${roundScoresRecord[i]?.opponent > roundScoresRecord[i]?.user ? 'bg-red-400' : 'bg-transparent'}`}></div>
+                                                        </div>
                                                     </div>
-                                                    <span className="text-sm font-black text-gray-300 uppercase italic">{m.name}</span>
                                                 </div>
-                                                <div className="text-2xl font-black italic text-gray-400">{m.score}</div>
-                                            </div>
-                                        ))}
+                                            ))}
+                                        </div>
                                     </div>
-                                </div>
 
-                                {/* OPPONENT TEAM */}
-                                <div className="space-y-4">
-                                    <div className="flex items-center justify-between px-4">
-                                        <div className="flex items-center gap-2">
-                                            <Users size={18} className="text-red-500" />
-                                            <span className="text-sm font-black uppercase tracking-widest text-white">{oppClanData?.name} ROSTER</span>
-                                        </div>
-                                        <span className="text-[10px] font-bold text-gray-500">POINTS EARNED</span>
-                                    </div>
-                                    <div className="space-y-2">
-                                        {opponentClanMembers.map((m, i) => (
-                                            <div key={i} className={`flex items-center justify-between p-4 bg-white/5 border border-white/5 rounded-2xl transition-all duration-300 hover:border-white/20`}>
-                                                <div className="flex items-center gap-4">
-                                                    <div className="relative">
-                                                        <img src={m.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${m.id}`} className="w-12 h-12 rounded-xl object-cover border border-white/10 opacity-70" alt={m.name} />
-                                                        {mvp?.id === m.id && (
-                                                            <div className="absolute -top-2 -right-2 bg-yellow-500 text-black p-1 rounded-lg">
-                                                                <Crown size={12} fill="currentColor" />
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                    <span className="text-sm font-black text-gray-300 uppercase italic">{m.name}</span>
-                                                </div>
-                                                <div className="text-2xl font-black italic text-gray-400">{m.score}</div>
-                                            </div>
-                                        ))}
+                                    {/* Navigation Step 1 */}
+                                    <div className="flex justify-center mt-4 md:mt-6">
+                                        <button 
+                                            onClick={() => setResultsStep(2)}
+                                            className="px-12 py-4 md:px-16 md:py-5 bg-white text-black font-black uppercase tracking-widest hover:scale-[1.05] active:scale-[0.95] transition-all relative overflow-hidden group shadow-[0_20px_40px_rgba(255,255,255,0.15)]"
+                                            style={{ clipPath: 'polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px)' }}
+                                        >
+                                            <span className="relative z-10 flex items-center justify-center gap-3 text-sm md:text-base">
+                                                TIẾP TỤC
+                                            </span>
+                                            <div className="absolute inset-0 bg-blue-600 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                                        </button>
                                     </div>
                                 </div>
                             </div>
-                        </div>
+                        ) : (
+                            <div className="w-full max-w-6xl animate-in fade-in slide-in-from-bottom-10 duration-700 space-y-4 md:space-y-6">
+                                {/* Players List 5v5 */}
+                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start">
+                                    {/* MY TEAM */}
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between px-4">
+                                            <div className="flex items-center gap-2">
+                                                <Users size={16} className="text-blue-500" />
+                                                <span className="text-xs font-black uppercase tracking-widest text-white">{myClanData?.name} ROSTER</span>
+                                            </div>
+                                            <span className="text-[9px] font-bold text-gray-500">ĐIỂM SỐ TRẬN ĐẤU</span>
+                                        </div>
+                                        <div className="space-y-1.5 md:space-y-2">
+                                            {/* User Me */}
+                                            <div className={`flex items-center justify-between p-3 md:p-4 border border-white/5 relative group transition-all duration-300 ${mvp?.id === userId ? 'bg-gradient-to-r from-yellow-500/20 via-yellow-600/10 to-transparent border-yellow-500/30' : 'bg-blue-500/10 border-blue-500/20 hover:bg-blue-500/20'}`}>
+                                                <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500"></div>
+                                                <div className="flex items-center gap-3">
+                                                    <div className="relative">
+                                                        <img src={profile?.avatar_url} className="w-10 h-10 md:w-12 md:h-12 rounded-xl object-cover border border-white/10" alt="ME" />
+                                                        {mvp?.id === userId && (
+                                                            <div className="absolute -top-1.5 -right-1.5 bg-yellow-500 text-black p-0.5 md:p-1 rounded-lg">
+                                                                <Crown size={10} fill="currentColor" />
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex flex-col">
+                                                        <span className={`text-xs md:text-sm font-black italic uppercase ${mvp?.id === userId ? 'text-yellow-500' : 'text-white'}`}>{profile?.display_name}</span>
+                                                        <div className="flex items-center gap-1.5">
+                                                            <span className={`text-[9px] md:text-[10px] font-bold tracking-widest uppercase ${mvp?.id === userId ? 'text-yellow-600/80' : 'text-blue-400/60'}`}>YOU</span>
+                                                            {mvp?.id === userId && <span className="text-[9px] md:text-[10px] font-black text-yellow-500 uppercase tracking-widest">(MVP)</span>}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className={`text-xl md:text-2xl font-black italic ${mvp?.id === userId ? 'text-yellow-500' : 'text-white'}`}>{userScore}</div>
+                                            </div>
+                                            {/* AI Teammates */}
+                                            {myClanMembers.map((m, i) => (
+                                                <div key={i} className={`flex items-center justify-between p-3 md:p-4 border border-white/5 relative transition-all duration-300 hover:border-white/20 ${mvp?.id === m.id ? 'bg-gradient-to-r from-yellow-500/20 via-yellow-600/10 to-transparent border-yellow-500/30' : 'bg-white/5'}`}>
+                                                    <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500"></div>
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="relative">
+                                                            <img src={m.avatar} className="w-10 h-10 md:w-12 md:h-12 rounded-xl object-cover border border-white/10 opacity-70" alt={m.name} />
+                                                            {mvp?.id === m.id && (
+                                                                <div className="absolute -top-1.5 -right-1.5 bg-yellow-500 text-black p-0.5 md:p-1 rounded-lg">
+                                                                    <Crown size={10} fill="currentColor" />
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        <div className="flex flex-col">
+                                                            <span className={`text-xs md:text-sm font-black uppercase italic ${mvp?.id === m.id ? 'text-yellow-500' : 'text-gray-300'}`}>{m.name}</span>
+                                                            {mvp?.id === m.id && <span className="text-[9px] md:text-[10px] font-black text-yellow-500 uppercase tracking-widest">MVP</span>}
+                                                        </div>
+                                                    </div>
+                                                    <div className={`text-xl md:text-2xl font-black italic ${mvp?.id === m.id ? 'text-yellow-500' : 'text-gray-400'}`}>{m.score}</div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
 
-                        {/* MVP Spotlight Banner (Mobile/Summary) */}
-                        <div className="w-full max-w-lg mt-12 mb-12">
-                            <div className="bg-gradient-to-r from-yellow-500/20 via-yellow-500/40 to-yellow-500/20 border-y border-yellow-500/30 p-4 flex flex-col items-center gap-2 relative overflow-hidden">
-                                <div className="absolute inset-0 bg-[linear-gradient(45deg,transparent_25%,rgba(255,255,255,0.1)_50%,transparent_75%)] bg-[length:250%_250%] animate-[shimmer_3s_infinite]"></div>
-                                <Crown size={32} className="text-yellow-500 mb-1" />
-                                <div className="text-[10px] font-black uppercase tracking-[0.5em] text-yellow-500">PLAYER OF THE MATCH</div>
-                                <div className="text-3xl font-black text-white italic uppercase tracking-tighter">{mvp?.name}</div>
+                                    {/* OPPONENT TEAM */}
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between px-4">
+                                            <span className="text-[9px] font-bold text-gray-500">ĐIỂM SỐ TRẬN ĐẤU</span>
+                                            <div className="flex items-center gap-2">
+                                                <Users size={16} className="text-red-500" />
+                                                <span className="text-xs font-black uppercase tracking-widest text-white">{oppClanData?.name} ROSTER</span>
+                                            </div>
+                                        </div>
+                                        <div className="space-y-1.5 md:space-y-2">
+                                            {opponentClanMembers.map((m, i) => (
+                                                <div key={i} className={`flex items-center justify-between p-3 md:p-4 border border-white/5 relative transition-all duration-300 hover:border-white/20 ${mvp?.id === m.id ? 'bg-gradient-to-l from-yellow-500/20 via-yellow-600/10 to-transparent border-yellow-500/30' : 'bg-white/5'}`}>
+                                                    <div className="absolute right-0 top-0 bottom-0 w-[3px] bg-red-500"></div>
+                                                   
+                                                    <div className={`text-xl md:text-2xl font-black italic ${mvp?.id === m.id ? 'text-yellow-500' : 'text-gray-400'}`}>{m.score}</div>
+                                                     <div className="flex items-center gap-3">
+                                                        <div className="relative">
+                                                            <img src={m.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${m.id}`} className="w-10 h-10 md:w-12 md:h-12 rounded-xl object-cover border border-white/10 opacity-70" alt={m.name} />
+                                                            {mvp?.id === m.id && (
+                                                                <div className="absolute -top-1.5 -right-1.5 bg-yellow-500 text-black p-0.5 md:p-1 rounded-lg">
+                                                                    <Crown size={10} fill="currentColor" />
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        <div className="flex flex-col">
+                                                            <span className={`text-xs md:text-sm font-black uppercase italic ${mvp?.id === m.id ? 'text-yellow-500' : 'text-gray-300'}`}>{m.name}</span>
+                                                            {mvp?.id === m.id && <span className="text-[9px] md:text-[10px] font-black text-yellow-500 uppercase tracking-widest">MVP</span>}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Navigation Actions */}
+                                <div className="flex flex-col md:flex-row gap-3 w-full max-w-xl mx-auto pt-2 md:pt-4">
+                                    <button 
+                                        onClick={() => setResultsStep(1)}
+                                        className="flex-1 py-4 md:py-5 bg-white/5 border border-white/10 text-white text-sm md:text-base font-black uppercase tracking-widest hover:bg-white/10 transition-all"
+                                        style={{ clipPath: 'polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px)' }}
+                                    >
+                                        QUAY LẠI
+                                    </button>
+                                    <button 
+                                        onClick={async () => {
+                                            setIsNavigatingAway(true);
+                                            await leaveRoom();
+                                            if (isTournament) {
+                                                navigate('/dashboard/tournament/bracket');
+                                            } else {
+                                                navigate('/dashboard/arena');
+                                            }
+                                        }}
+                                        className="flex-[1] py-4 md:py-5 bg-gradient-to-r from-blue-600 to-blue-700 text-white text-sm md:text-base font-black uppercase tracking-widest hover:scale-[1.02] active:scale-[0.98] transition-all relative overflow-hidden group shadow-[0_20px_40px_rgba(37,99,235,0.2)]"
+                                        style={{ clipPath: 'polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px)' }}
+                                    >
+                                        <span className="relative z-10 flex items-center justify-center gap-3">
+                                            VỀ SẢNH CHÍNH
+                                        </span>
+                                    </button>
+                                </div>
                             </div>
-                        </div>
-
-                        {/* Navigation Actions */}
-                        <div className="flex flex-col md:flex-row gap-6 w-full max-w-md items-center justify-center mt-4">
-                            <button 
-                                onClick={async () => {
-                                    setIsNavigatingAway(true);
-                                    await leaveRoom();
-                                    navigate('/dashboard/arena');
-                                }}
-                                className="w-full py-5 bg-white text-black font-black uppercase tracking-widest hover:scale-[1.02] active:scale-[0.98] transition-all relative overflow-hidden group shadow-[0_20px_40px_rgba(255,255,255,0.1)]"
-                                style={{ clipPath: 'polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px)' }}
-                            >
-                                <span className="relative z-10 flex items-center justify-center gap-3">
-                                    <LogOut size={20} />
-                                    QUAY LẠI SẢNH CHÍNH
-                                </span>
-                                <div className="absolute inset-0 bg-blue-600 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
-                            </button>
-                        </div>
+                        )}
                     </div>
                 </div>
             )}
 
             {/* Standard Game Over / Results Overlay (Non-Tournament) */}
             {isGameOver && !isTournament && (
-                <div className="fixed inset-0 z-[70] bg-neutral-950 animate-in fade-in duration-500 overflow-y-auto custom-scrollbar">
+                <div className="fixed inset-0 z-[70] bg-neutral-950 animate-in fade-in duration-500 overflow-y-auto h-[100dvh] custom-scrollbar">
                     <div className="absolute inset-0 z-0">
                         <div className={`absolute inset-0 ${setScores.user > setScores.opponent ? 'bg-blue-900/60' : setScores.user < setScores.opponent ? 'bg-red-900/60' : 'bg-neutral-900/60'} mix-blend-overlay fixed inset-0`}></div>
                         <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/80 to-neutral-950/20 fixed inset-0"></div>
                         <div className="absolute inset-0 bg-grid-pattern opacity-20 pointer-events-none fixed inset-0"></div>
                     </div>
 
-                    <div className="min-h-full flex flex-col items-center justify-center p-4 py-8 relative z-10 text-center">
-                        <div className="relative mb-8 md:mb-12 animate-in zoom-in-50 duration-700 mt-8 md:mt-0">
-                            <h1 className="text-5xl md:text-9xl font-black uppercase tracking-tighter italic leading-none text-transparent bg-clip-text bg-gradient-to-b from-white to-gray-500 drop-shadow-2xl">
-                                {setScores.user > setScores.opponent ? 'VICTORY' : setScores.user === setScores.opponent ? 'DRAW' : 'DEFEAT'}
-                            </h1>
-                            <div className="w-32 h-1 bg-gradient-to-r from-transparent via-white/50 to-transparent mx-auto mt-4"></div>
-                        </div>
+                    <div className="min-h-full flex flex-col items-center justify-center p-4 py-6 relative z-10 text-center">
+                        {resultsStep === 1 ? (
+                            <div className="w-full max-w-4xl animate-in zoom-in-95 duration-700 flex flex-col items-center">
+                                <div className="relative mb-6 md:mb-8 mt-4 md:mt-0">
+                                    <h1 className="text-4xl md:text-7xl lg:text-8xl font-black uppercase tracking-tighter italic leading-none text-transparent bg-clip-text bg-gradient-to-b from-white to-gray-500 drop-shadow-2xl">
+                                        {setScores.user > setScores.opponent ? 'VICTORY' : setScores.user === setScores.opponent ? 'DRAW' : 'DEFEAT'}
+                                    </h1>
+                                    <div className="w-24 md:w-32 h-1 bg-gradient-to-r from-transparent via-white/50 to-transparent mx-auto mt-4"></div>
+                                </div>
 
-                        <div className="relative grid grid-cols-1 md:grid-cols-2 gap-8 md:gap-16 w-full max-w-4xl mb-12 z-10">
+                        <div className="relative grid grid-cols-1 md:grid-cols-2 gap-8 md:gap-16 w-full max-w-4xl mb-6 z-10">
                              {/* My Score */}
                              <div className={`relative p-6 md:p-8 border-2 ${setScores.user >= setScores.opponent ? 'bg-blue-900/40 border-blue-500/50' : 'bg-neutral-900/40 border-white/10'} backdrop-blur-xl animate-in slide-in-from-left-20 duration-1000 overflow-hidden group`}
                                   style={{ clipPath: 'polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px)' }}>
@@ -1936,96 +1984,147 @@ const GamePlayView = () => {
                              </div>
                         </div>
 
-                        {isRanked && showMMRSummary ? (
-                            <div className="fixed inset-0 z-[120] bg-neutral-950 flex flex-col items-center justify-center animate-in fade-in zoom-in-95 duration-500 overflow-hidden p-4">
-                                 {/* Background Glows */}
-                                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-fuchsia-600/10 rounded-full blur-[120px] pointer-events-none"></div>
-
-                                 <MMRSummaryOverlay 
-                                    mmr={userNewMMR} 
-                                    change={mmrChange} 
-                                    avatarUrl={profile?.avatar_url || undefined}
-                                    onDone={async () => {
-                                        setIsNavigatingAway(true);
-                                        await leaveRoom();
-                                        navigate('/dashboard/arena');
-                                    }}
-                                 />
+                                <button 
+                                    onClick={() => setResultsStep(2)}
+                                    className="relative px-12 py-5 bg-white text-black font-black uppercase tracking-widest hover:scale-105 transition-transform active:scale-95 shadow-[0_0_50px_rgba(255,255,255,0.4)] z-[75]"
+                                    style={{ clipPath: 'polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px)' }}
+                                >
+                                    TIẾP TỤC
+                                </button>
                             </div>
                         ) : (
-                            <button 
-                                onClick={async () => {
-                                    const isWin = setScores.user > setScores.opponent;
-                                    const isDraw = setScores.user === setScores.opponent;
-                                    const result = isWin ? 'Chiến thắng' : (isDraw ? 'Hòa' : 'Thất bại');
+                            <div className="w-full max-w-4xl animate-in zoom-in-95 duration-700 flex flex-col items-center">
+                                {isRanked && showMMRSummary ? (
+                                    <div className="fixed inset-0 z-[120] bg-neutral-950 flex flex-col items-center justify-center animate-in fade-in zoom-in-95 duration-500 overflow-y-auto p-4 py-10">
+                                         {/* Background Glows */}
+                                         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-fuchsia-600/10 rounded-full blur-[120px] pointer-events-none"></div>
 
-                                    let mode = 'Normal';
-                                    if (isRanked) mode = 'Ranked';
-                                    else if (isBot) mode = 'Bot';
-                                    else if ((location as any).state?.isCustom) mode = 'Custom';
+                                         <MMRSummaryOverlay 
+                                            mmr={userNewMMR} 
+                                            change={mmrChange} 
+                                            avatarUrl={profile?.avatar_url || undefined}
+                                            onDone={async () => {
+                                                setIsNavigatingAway(true);
+                                                await leaveRoom();
+                                                navigate('/dashboard/arena');
+                                            }}
+                                         />
+                                    </div>
+                                ) : (
+                                    <div className="w-full flex flex-col items-center">
+                                        <div className="text-[10px] font-black text-gray-500 uppercase tracking-[0.5em] mb-6 md:mb-8">INDIVIDUAL PERFORMANCE</div>
+                                        
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 w-full mb-4 md:mb-6">
+                                            {/* My Point Details */}
+                                            <div className="bg-white/5 border border-white/10 p-4 md:p-5 rounded-3xl flex items-center justify-between">
+                                                <div className="flex items-center gap-4">
+                                                    <img src={profile?.avatar_url} className="w-10 h-10 md:w-12 md:h-12 rounded-xl object-cover" alt="ME" />
+                                                    <div className="text-left">
+                                                        <div className="text-xs md:text-sm font-black text-white italic uppercase">{profile?.display_name}</div>
+                                                        <div className="text-[9px] font-bold text-blue-400 uppercase tracking-widest">YOU</div>
+                                                    </div>
+                                                </div>
+                                                <div className="text-2xl md:text-3xl font-black italic text-white">{userScore} PTS</div>
+                                            </div>
 
-                                    const userRoundScores = roundScoresRecord.map(r => r.user);
-                                    let maxRounds = 3; 
-                                    if (isRanked) maxRounds = 5; 
-                                    else if (roomSettings?.format?.startsWith('Bo')) {
-                                        maxRounds = parseInt(roomSettings.format.replace('Bo', '')) || 3;
-                                    }
+                                            {/* Opponent Point Details */}
+                                            <div className="bg-white/5 border border-white/10 p-4 md:p-5 rounded-3xl flex items-center justify-between">
+                                                <div className="flex items-center gap-4">
+                                                    <img src={opponent?.avatar_url} className="w-10 h-10 md:w-12 md:h-12 rounded-xl object-cover" alt="OPP" />
+                                                    <div className="text-left">
+                                                        <div className="text-xs md:text-sm font-black text-gray-300 italic uppercase">{opponent?.display_name}</div>
+                                                        <div className="text-[9px] font-bold text-red-400 uppercase tracking-widest">OPPONENT</div>
+                                                    </div>
+                                                </div>
+                                                <div className="text-2xl md:text-3xl font-black italic text-white">{opponentScore} PTS</div>
+                                            </div>
+                                        </div>
 
-                                    while (userRoundScores.length < maxRounds) {
-                                        userRoundScores.push(0);
-                                    }
-                                    
-                                    try {
-                                        if (!historySavedRef.current) {
-                                            historySavedRef.current = true;
-                                            await supabase.from('game_history').insert({
-                                                user_id: userId,
-                                                opponent_id: opponent?.id,
-                                                room_id: roomId,
-                                                result: result,
-                                                score_user: setScores.user,
-                                                score_opponent: setScores.opponent,
-                                                mode: mode,
-                                                mmr_change: isRanked ? (mmrChange || 0) : 0,
-                                                round_scores: userRoundScores
-                                            });
-                                        }
-                                    } catch (err) {
-                                        console.error("Failed to save game history:", err);
-                                    }
+                                        <div className="flex flex-col md:flex-row gap-3 w-full max-w-md">
+                                            <button 
+                                                onClick={() => setResultsStep(1)}
+                                                className="flex-1 py-4 md:py-5 bg-white/5 border border-white/10 text-white text-sm md:text-base font-black uppercase tracking-widest hover:bg-white/10 transition-all"
+                                                style={{ clipPath: 'polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px)' }}
+                                            >
+                                                QUAY LẠI
+                                            </button>
+                                            <button 
+                                                onClick={async () => {
+                                                    const isWin = setScores.user > setScores.opponent;
+                                                    const isDraw = setScores.user === setScores.opponent;
+                                                    const result = isWin ? 'Chiến thắng' : (isDraw ? 'Hòa' : 'Thất bại');
 
-                                    if (isRanked) {
-                                        if (userId && profile) {
-                                            if (!isDraw) {
-                                                const currentMMR = profile.mmr ?? null;
-                                                const calculatedNewMMR = calculateMMRChange(currentMMR, isWin);
-                                                const change = calculatedNewMMR - (currentMMR || 0);
-                                                
-                                                setMmrChange(change);
-                                                setUserNewMMR(calculatedNewMMR);
+                                                    let mode = 'Normal';
+                                                    if (isRanked) mode = 'Ranked';
+                                                    else if (isBot) mode = 'Bot';
+                                                    else if ((location.state as GameLocationState)?.isCustom) mode = 'Custom';
 
-                                                await supabase
-                                                    .from('profiles')
-                                                    .update({ mmr: calculatedNewMMR })
-                                                    .eq('id', userId);
-                                            } else {
-                                                setMmrChange(0);
-                                                setUserNewMMR(profile.mmr ?? 0);
-                                            }
-                                        }
-                                        setShowMMRSummary(true);
-                                        return;
-                                    }
+                                                    const userRoundScores = roundScoresRecord.map(r => r.user);
+                                                    let maxRounds = 3; 
+                                                    if (isRanked) maxRounds = 5; 
+                                                    else if (roomSettings?.format?.startsWith('Bo')) {
+                                                        maxRounds = parseInt(roomSettings.format.replace('Bo', '')) || 3;
+                                                    }
 
-                                    setIsNavigatingAway(true);
-                                    await leaveRoom();
-                                    navigate('/dashboard/arena');
-                                }}
-                                className="relative px-12 py-5 bg-white text-black font-black uppercase tracking-widest hover:scale-105 transition-transform active:scale-95 shadow-[0_0_50px_rgba(255,255,255,0.4)] z-[75] mb-8 md:mb-0"
-                                style={{ clipPath: 'polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px)' }}
-                            >
-                                {isRanked ? 'Continue to Rank Update' : 'Quay lại sảnh chính'}
-                            </button>
+                                                    while (userRoundScores.length < maxRounds) {
+                                                        userRoundScores.push(0);
+                                                    }
+                                                    
+                                                    try {
+                                                        if (!historySavedRef.current) {
+                                                            historySavedRef.current = true;
+                                                            await supabase.from('game_history').insert({
+                                                                user_id: userId,
+                                                                opponent_id: opponent?.id,
+                                                                room_id: roomId,
+                                                                result: result,
+                                                                score_user: setScores.user,
+                                                                score_opponent: setScores.opponent,
+                                                                mode: mode,
+                                                                mmr_change: isRanked ? (mmrChange || 0) : 0,
+                                                                round_scores: userRoundScores
+                                                            });
+                                                        }
+                                                    } catch (err) {
+                                                        console.error("Failed to save game history:", err);
+                                                    }
+
+                                                    if (isRanked) {
+                                                        if (userId && profile) {
+                                                            if (!isDraw) {
+                                                                 const currentMMR = profile.mmr ?? null;
+                                                                 const calculatedNewMMR = calculateMMRChange(currentMMR, isWin);
+                                                                 const change = calculatedNewMMR - (currentMMR || 0);
+                                                                 
+                                                                 setMmrChange(change);
+                                                                 setUserNewMMR(calculatedNewMMR);
+
+                                                                 await supabase
+                                                                     .from('profiles')
+                                                                     .update({ mmr: calculatedNewMMR })
+                                                                     .eq('id', userId);
+                                                            } else {
+                                                                 setMmrChange(0);
+                                                                 setUserNewMMR(profile.mmr ?? 0);
+                                                            }
+                                                        }
+                                                        setShowMMRSummary(true);
+                                                        return;
+                                                    }
+
+                                                    setIsNavigatingAway(true);
+                                                    await leaveRoom();
+                                                    navigate('/dashboard/arena');
+                                                }}
+                                                className="flex-[2] py-4 md:py-5 bg-white text-black text-sm md:text-base font-black uppercase tracking-widest hover:scale-105 transition-transform active:scale-95 shadow-[0_0_50px_rgba(255,255,255,0.4)] z-[75]"
+                                                style={{ clipPath: 'polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px)' }}
+                                            >
+                                                {isRanked ? 'XEM XẾP HẠNG' : 'VỀ SẢNH CHÍNH'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
                         )}
                     </div>
                 </div>
@@ -2046,17 +2145,17 @@ const GamePlayView = () => {
             {/* Set Result (Face-off Style) Overlay */}
             {showSetResults && (
                 <div className="fixed inset-0 z-[90] bg-neutral-950 animate-in fade-in duration-500 overflow-y-auto custom-scrollbar">
-                    <div className="min-h-full flex flex-col items-center justify-center p-4 py-8 relative">
+                    <div className="min-h-full flex flex-col items-center justify-center p-4 py-4 relative">
                         <div className="absolute inset-0 bg-dot-pattern opacity-10 fixed"></div>
                         <div className="absolute top-0 w-full h-px bg-gradient-to-r from-transparent via-white/20 to-transparent fixed"></div>
                         <div className="absolute bottom-0 w-full h-px bg-gradient-to-r from-transparent via-white/20 to-transparent fixed"></div>
                         
-                        <div className="relative mb-12 text-center z-10">
+                        <div className="relative mb-6 text-center z-10">
                             <h2 className="text-3xl md:text-5xl font-black text-white uppercase italic tracking-tighter mb-8 animate-in slide-in-from-top-10 duration-700">HIỆP {currentRound} HOÀN TẤT</h2>
                             
-                            <div className="px-12 py-6 bg-white/5 border border-white/10 backdrop-blur-xl relative" style={{ clipPath: 'polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px)' }}>
+                            <div className="px-8 py-4 bg-white/5 border border-white/10 backdrop-blur-xl relative" style={{ clipPath: 'polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px)' }}>
                                 <span className="text-xs font-bold text-gray-400 uppercase tracking-[0.4em] mb-2 block">Match Score</span>
-                                <div className="text-6xl md:text-8xl font-black text-white tracking-widest flex items-center justify-center gap-8">
+                                <div className="text-5xl md:text-7xl font-black text-white tracking-widest flex items-center justify-center gap-8">
                                     <span className={setScores.user > setScores.opponent ? 'text-blue-500' : 'text-gray-500'}>{setScores.user}</span>
                                     <div className="h-12 w-px bg-white/10 rotate-12"></div>
                                     <span className={setScores.opponent > setScores.user ? 'text-red-500' : 'text-gray-500'}>{setScores.opponent}</span>
@@ -2068,7 +2167,7 @@ const GamePlayView = () => {
                             {/* Player 1 Stats */}
                             <div className="flex flex-col items-center gap-6">
                                 <div className="relative">
-                                    <div className="w-24 h-24 md:w-48 md:h-48 rounded-3xl border-2 border-blue-500 shadow-[0_0_30px_rgba(59,130,246,0.3)] bg-neutral-900 p-1 rotate-[-3deg]"
+                                    <div className="w-20 h-20 md:w-32 md:h-32 rounded-3xl border-2 border-blue-500 shadow-[0_0_30px_rgba(59,130,246,0.3)] bg-neutral-900 p-1 rotate-[-3deg]"
                                          style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
                                         <img src={profile?.avatar_url || "https://api.dicebear.com/7.x/avataaars/svg?seed=fallback"} className="w-full h-full object-cover grayscale-[0.5]" alt="Me" />
                                     </div>
@@ -2082,7 +2181,7 @@ const GamePlayView = () => {
                             {/* Player 2 Stats */}
                             <div className="flex flex-col items-center gap-6">
                                 <div className="relative">
-                                    <div className="w-24 h-24 md:w-48 md:h-48 rounded-3xl border-2 border-red-500 shadow-[0_0_30px_rgba(239,68,68,0.3)] bg-neutral-900 p-1 rotate-[3deg]"
+                                    <div className="w-20 h-20 md:w-32 md:h-32 rounded-3xl border-2 border-red-500 shadow-[0_0_30px_rgba(239,68,68,0.3)] bg-neutral-900 p-1 rotate-[3deg]"
                                          style={{ clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)' }}>
                                         <img src={opponent?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${opponent?.id || 'opponent'}`} className="w-full h-full object-cover grayscale-[0.5]" alt="Opponent" />
                                     </div>
@@ -2110,15 +2209,15 @@ const GamePlayView = () => {
 
             {/* --- TOURNAMENT INTRO OVERLAY --- */}
             {showTournamentIntro && (
-                <div className="fixed inset-0 z-[200] bg-black flex flex-col items-center justify-center font-sans">
-                     <div className="absolute inset-0 bg-neutral-900">
+                <div className="fixed inset-0 z-[200] bg-black overflow-y-auto font-sans">
+                     <div className="fixed inset-0 bg-neutral-900">
                          {/* Background Effects */}
                          <div className="absolute inset-0 bg-grid-pattern opacity-10"></div>
                          <div className="absolute top-0 left-0 w-full h-[500px] bg-gradient-to-b from-fuchsia-900/20 to-transparent"></div>
                          <div className="absolute bottom-0 left-0 w-full h-[500px] bg-gradient-to-t from-blue-900/20 to-transparent"></div>
                      </div>
 
-                     <div className="relative z-10 w-full max-w-7xl flex flex-col items-center gap-12">
+                     <div className="relative min-h-full z-10 w-full max-w-7xl flex flex-col items-center justify-center py-10 px-4 gap-12">
                          {/* Header */}
                          <div className="text-center space-y-2">
                              <div className="px-6 py-2 bg-white/5 border border-white/10 rounded-full inline-flex items-center gap-2 backdrop-blur-md">
@@ -2202,14 +2301,14 @@ const MMRSummaryOverlay = ({ mmr, change, onDone, avatarUrl }: { mmr: number | n
     const rank = getRankFromMMR(mmr);
     
     return (
-        <div className="relative flex flex-col items-center text-center max-w-4xl w-full px-4 z-10 animate-in fade-in slide-in-from-bottom-10 duration-700 h-full max-h-screen overflow-y-auto py-8 no-scrollbar">
-            <h2 className="text-[10px] md:text-sm font-black text-gray-500 uppercase tracking-[0.5em] mb-8 shrink-0 flex items-center gap-4">
+        <div className="relative flex flex-col items-center text-center max-w-4xl w-full px-4 z-10 animate-in fade-in slide-in-from-bottom-10 duration-700 min-h-full py-8 no-scrollbar">
+            <h2 className="text-[10px] md:text-sm font-black text-gray-500 uppercase tracking-[0.5em] mb-4 shrink-0 flex items-center gap-4">
                 <div className="h-px w-8 bg-gray-500/30"></div>
                 RANK PERFORMANCE
                 <div className="h-px w-8 bg-gray-500/30"></div>
             </h2>
             
-            <div className="flex flex-col items-center justify-center w-full mb-8 shrink-0">
+            <div className="flex flex-col items-center justify-center w-full mb-4 shrink-0">
                 {/* Rank Circle Column */}
                 <div className="flex flex-col items-center">
                     <div className="relative mb-6">
@@ -2225,7 +2324,7 @@ const MMRSummaryOverlay = ({ mmr, change, onDone, avatarUrl }: { mmr: number | n
                         )}
                     </div>
 
-                    <h3 className="text-4xl md:text-6xl font-black text-white uppercase italic tracking-tighter mb-4 drop-shadow-[0_0_10px_rgba(255,255,255,0.3)]">
+                    <h3 className="text-4xl md:text-5xl font-black text-white uppercase italic tracking-tighter mb-4 drop-shadow-[0_0_10px_rgba(255,255,255,0.3)]">
                         {rank.tier} <span className="text-transparent bg-clip-text bg-gradient-to-r from-red-500 to-orange-500">{rank.division}</span>
                     </h3>
                     
@@ -2239,7 +2338,7 @@ const MMRSummaryOverlay = ({ mmr, change, onDone, avatarUrl }: { mmr: number | n
             </div>
 
             {/* Bottom Section: Progress Bar and Avatar Button in a row */}
-            <div className="flex flex-col md:flex-row items-center justify-center gap-8 w-full max-w-5xl bg-neutral-900/60 border border-white/5 p-8 backdrop-blur-xl shrink-0" 
+            <div className="flex flex-col md:flex-row items-center justify-center gap-8 w-full max-w-5xl bg-neutral-900/60 border border-white/5 p-4 backdrop-blur-xl shrink-0" 
                  style={{ clipPath: 'polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px)' }}>
                 
                 {/* Progress Bar Side */}

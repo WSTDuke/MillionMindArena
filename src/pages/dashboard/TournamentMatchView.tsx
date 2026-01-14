@@ -31,29 +31,41 @@ const ClanIconDisplay = ({ iconName, color, className = "w-12 h-12" }: { iconNam
 };
 
 const PlayerCard = ({ player, side }: { player: MatchMember, side: 'left' | 'right' }) => (
-  <div className={`relative w-full h-40 md:h-52 bg-neutral-900 border border-white/10 overflow-hidden group transition-all hover:border-fuchsia-500/50 group`}>
-    {/* Background Image Placeholder / Aesthetic Blur */}
-    <div className="absolute inset-0 opacity-40 group-hover:opacity-60 transition-opacity">
-      <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent z-10" />
+  <div className={`relative w-full h-40 md:h-56 bg-zinc-950 border border-white/5 overflow-hidden group transition-all duration-300 hover:border-fuchsia-500/40 hover:shadow-[0_0_20px_rgba(217,70,239,0.15)]`}>
+    {/* Avatar Background - No Blur */}
+    <div className="absolute inset-0 z-0">
       <img 
         src={player.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${player.id}`} 
         alt={player.name} 
-        className="w-full h-full object-cover blur-sm scale-110 group-hover:scale-100 transition-transform duration-700"
+        className="w-full h-full object-cover transition-transform duration-1000 group-hover:scale-105"
       />
+      <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent" />
+      
+      {/* Subtle Pattern Overlay */}
+      <div className="absolute inset-0 opacity-[0.15] bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] mix-blend-overlay" />
     </div>
 
+    {/* Header Accent Line */}
+    <div 
+        className={`absolute top-0 left-0 w-full h-0.5 opacity-50 group-hover:opacity-100 transition-opacity`}
+        style={{ backgroundColor: side === 'left' ? '#d946ef' : '#3b82f6' }}
+    />
+
     {/* Info Overlay */}
-    <div className="absolute inset-0 z-20 p-4 flex flex-col justify-end">
-        <div className="space-y-1">
-            <span className="text-[8px] font-black text-gray-500 uppercase tracking-[0.2em]">Player</span>
-            <h4 className="text-sm md:text-base font-black text-white uppercase italic tracking-tighter truncate leading-none">
+    <div className="absolute inset-x-0 bottom-0 z-20 p-3 pt-8 bg-gradient-to-t from-black via-black/80 to-transparent flex flex-col justify-end transition-transform duration-300 group-hover:translate-y-[-2px]">
+        <div className="space-y-0.5">
+            <div className="flex items-center gap-1.5 opacity-60">
+                <span className="text-[7px] font-black text-white uppercase tracking-[0.3em]">Player</span>
+                <div className="h-px flex-1 bg-white/20" />
+            </div>
+            <h4 className="text-sm md:text-base font-black text-white uppercase italic tracking-tighter truncate drop-shadow-lg">
                 {player.name}
             </h4>
             <div 
-               className="inline-block mt-1 px-3 py-1 rounded-sm border border-white/10 bg-black/40 backdrop-blur-md"
-               style={{ borderColor: `${player.rankColor}40` }}
+               className="inline-flex items-center justify-center mt-1.5 px-2.5 py-0.5 border border-white/10 bg-zinc-900/90 w-full "
+               style={{ borderBottomColor: player.rankColor, borderBottomWidth: '3px' }}
             >
-                <span className="text-[10px] font-black uppercase tracking-widest" style={{ color: player.rankColor }}>
+                <span className="text-[9px] font-black uppercase tracking-widest" style={{ color: player.rankColor }}>
                     {player.rank}
                 </span>
             </div>
@@ -62,7 +74,7 @@ const PlayerCard = ({ player, side }: { player: MatchMember, side: 'left' | 'rig
 
     {/* Side Glow Line */}
     <div 
-        className={`absolute bottom-0 left-0 w-full h-1`}
+        className={`absolute bottom-0 left-0 w-full h-1 shadow-[0_-4px_12px_rgba(0,0,0,0.5)]`}
         style={{ backgroundColor: side === 'left' ? '#d946ef' : '#3b82f6' }}
     />
   </div>
@@ -213,7 +225,32 @@ const TournamentMatchView = () => {
     }, [timeLeft, matchData, navigate]);
 
     if (loading) {
-        return <div className="min-h-screen bg-black flex items-center justify-center text-white">Loading...</div>;
+        return <div className="min-h-screen flex items-center justify-center bg-black">
+  <div className="flex flex-col items-center gap-4">
+
+    {/* Text chính */}
+    <p className="text-3xl font-black tracking-widest uppercase
+                   text-fuchsia-400
+                   animate-pulse
+                   drop-shadow-[0_0_15px_#d946ef]">
+      ĐANG TẢI
+    </p>
+
+    {/* Dấu chấm nhấp nháy */}
+    <div className="flex gap-2 text-fuchsia-400 text-3xl font-black">
+      <span className="animate-bounce [animation-delay:0ms]">.</span>
+      <span className="animate-bounce [animation-delay:200ms]">.</span>
+      <span className="animate-bounce [animation-delay:400ms]">.</span>
+    </div>
+
+    {/* Subtitle */}
+    <p className="text-xs uppercase tracking-[0.4em] text-fuchsia-300/60 animate-pulse">
+      Vui lòng chờ
+    </p>
+
+  </div>
+</div>
+;
     }
 
     if (!matchData) {
@@ -254,14 +291,14 @@ const TournamentMatchView = () => {
                 </div>
              </div>
              <h2 className="text-2xl md:text-3xl font-black text-white uppercase italic tracking-tighter">
-                Kiểm Tra <span className="text-fuchsia-500">Đối Thủ</span>
+                Kiểm tra <span className="text-fuchsia-500">Đối Thủ</span>
              </h2>
           </div>
     
           {/* Main Content Area */}
-          <div className="flex-1 relative z-10 px-4 md:px-12 flex items-center justify-between gap-4 md:gap-12 w-full max-w-7xl mx-auto min-h-0">
+          <div className="flex-1 relative z-10 px-4 md:px-8 flex flex-col xl:flex-row items-center justify-between gap-4 md:gap-6 w-full max-w-[1700px] mx-auto min-h-0 overflow-y-auto custom-scrollbar py-4">
             {/* Team 1 (Left) */}
-            <div className="flex-1 flex flex-col items-center justify-center space-y-6 animate-in slide-in-from-left-8 duration-700 h-full">
+            <div className="flex-[2] flex flex-col items-center justify-center space-y-6 animate-in slide-in-from-left-8 duration-700 h-full min-w-0">
                <div className="flex flex-col items-center gap-4 shrink-0">
                   <div className="p-4 bg-neutral-900 border border-white/10 rounded-2xl shadow-2xl relative group">
                     <div className="absolute -inset-2 bg-gradient-to-br from-fuchsia-600 to-transparent opacity-20 blur-xl group-hover:opacity-40 transition-opacity" />
@@ -275,7 +312,7 @@ const TournamentMatchView = () => {
                   </div>
                </div>
     
-               <div className="grid grid-cols-2 md:grid-cols-5 gap-4 w-full overflow-y-auto pr-2 custom-scrollbar">
+               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 w-full">
                   {members1.map((p, idx) => (
                     <div key={p.id} className="animate-in fade-in slide-in-from-bottom-4" style={{ animationDelay: `${idx * 0.1}s` }}>
                        <PlayerCard player={p} side="left" />
@@ -285,7 +322,7 @@ const TournamentMatchView = () => {
             </div>
     
             {/* Center VS & Timer */}
-            <div className="flex flex-col items-center justify-center space-y-6 py-4 min-w-[120px] shrink-0">
+            <div className="flex-none flex flex-col items-center justify-center space-y-6 py-4 min-w-[140px] shrink-0">
                <div className="relative group">
                   <div className="absolute animate-ping -inset-4 bg-white/5 rounded-full blur-2xl" />
                   <div className="w-20 h-20 md:w-24 md:h-24 rounded-full bg-white border-2 border-fuchsia-500 flex items-center justify-center relative">
@@ -308,7 +345,7 @@ const TournamentMatchView = () => {
             </div>
     
             {/* Team 2 (Right) */}
-            <div className="flex-1 flex flex-col items-center justify-center space-y-6 animate-in slide-in-from-right-8 duration-700 h-full">
+            <div className="flex-[2] flex flex-col items-center justify-center space-y-6 animate-in slide-in-from-right-8 duration-700 h-full min-w-0">
                <div className="flex flex-col items-center gap-4 shrink-0">
                   <div className="p-4 bg-neutral-900 border border-white/10 rounded-2xl shadow-2xl relative group">
                     <div className="absolute -inset-2 bg-gradient-to-br from-blue-600 to-transparent opacity-20 blur-xl group-hover:opacity-40 transition-opacity" />
@@ -326,13 +363,13 @@ const TournamentMatchView = () => {
                   </div>
                </div>
     
-               <div className="grid grid-cols-2 md:grid-cols-5 gap-4 w-full overflow-y-auto pr-2 custom-scrollbar">
+               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 w-full">
                   {members2.length > 0 ? members2.map((p, idx) => (
                     <div key={p.id} className="animate-in fade-in slide-in-from-bottom-4" style={{ animationDelay: `${idx * 0.1}s` }}>
                        <PlayerCard player={p} side="right" />
                     </div>
                   )) : Array.from({ length: 5 }).map((_, idx) => (
-                    <div key={idx} className="w-full h-40 md:h-52 bg-neutral-900/40 border border-white/5 rounded-xl animate-pulse" />
+                    <div key={idx} className="w-full h-40 md:h-56 bg-neutral-900/40 border border-white/5 rounded-xl animate-pulse" />
                   ))}
                </div>
             </div>
